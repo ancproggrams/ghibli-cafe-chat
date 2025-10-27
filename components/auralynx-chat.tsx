@@ -2,6 +2,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { io, Socket } from 'socket.io-client';
 import { TopNavigation } from './top-navigation';
 import { RobotPanel } from './robot-panel';
 import { ChatInterface } from './chat-interface';
@@ -12,6 +13,7 @@ interface Message {
   timestamp: string;
   id?: string;
   streaming?: boolean;
+  sender?: string;
 }
 
 export default function AuralynxChat() {
@@ -37,45 +39,53 @@ export default function AuralynxChat() {
     ));
   }, []);
 
-  const socketRef = useRef<WebSocket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const streamingTargetRef = useRef<HTMLDivElement | null>(null);
 
-  // WebSocket functionality
+  // Socket.io functionality
   const connectWebSocket = useCallback(() => {
     if (connected || socketRef.current) return;
     
-    // Replace with your backend WebSocket URL
-    const WS_ENDPOINT = 'wss://YOUR-WEBSOCKET-ENDPOINT-HERE';
+    // Backend Socket.io URL
+    const SOCKET_ENDPOINT = 'http://localhost:3003';
     
     try {
-      socketRef.current = new WebSocket(WS_ENDPOINT);
+      socketRef.current = io(SOCKET_ENDPOINT, {
+        transports: ['websocket', 'polling']
+      });
+      
+      // Make socketRef available globally for stop button
+      (window as any).socketRef = socketRef;
     } catch (e) {
-      addMessage('bot', 'Invalid WebSocket URL. Please set WS_ENDPOINT.');
+      addMessage('bot', 'Invalid Socket.io URL. Please set SOCKET_ENDPOINT.');
       return;
     }
 
-    socketRef.current.addEventListener('open', () => {
+    socketRef.current.on('connect', () => {
       setConnected(true);
-      addMessage('bot', 'WebSocket connected.');
+      addMessage('bot', 'Socket.io connected to Ollama backend!');
+      console.log('Socket.io connected successfully');
     });
 
-    socketRef.current.addEventListener('close', () => {
+    socketRef.current.on('disconnect', () => {
       setConnected(false);
-      addMessage('bot', 'WebSocket disconnected.');
+      addMessage('bot', 'Socket.io disconnected.');
       socketRef.current = null;
     });
 
-    socketRef.current.addEventListener('error', (e: any) => {
+    socketRef.current.on('connect_error', (e: any) => {
+      console.error('Socket.io connection error:', e);
+      addMessage('bot', 'Connection error: ' + (e?.message || 'Failed to connect to backend'));
+    });
+
+    socketRef.current.on('error', (e: any) => {
+      console.error('Socket.io error:', e);
       addMessage('bot', 'WebSocket error: ' + (e?.message || 'unknown'));
     });
 
-    socketRef.current.addEventListener('message', (event) => {
-      let data;
-      try { 
-        data = JSON.parse(event.data); 
-      } catch { 
-        data = event.data; 
-      }
+    socketRef.current.on('message', (data: any) => {
+      console.log('Received Socket.io message:', data);
+      console.log('Parsed data:', data);
 
       if (typeof data === 'string') {
         if (streamingTargetRef.current) {
@@ -85,23 +95,16 @@ export default function AuralynxChat() {
       }
 
       switch (data.type) {
-        case 'start':
-          // Start streaming message will be handled by addStreamingMessage
-          break;
-        case 'chunk':
-          if (streamingTargetRef.current) {
-            streamingTargetRef.current.textContent += (data.delta || '');
-          }
-          break;
-        case 'end':
-          streamingTargetRef.current = null;
-          break;
         case 'message':
-          addMessage(data.role || 'bot', data.text || '');
+          addMessage(data.role || 'bot', data.text || '', data.sender);
+          break;
+        case 'error':
+          addMessage('bot', data.text || 'An error occurred');
           break;
         default:
-          if (data.delta && streamingTargetRef.current) {
-            streamingTargetRef.current.textContent += data.delta;
+          // Handle any other message types
+          if (data.text) {
+            addMessage(data.role || 'bot', data.text, data.sender);
           }
       }
     });
@@ -109,17 +112,17 @@ export default function AuralynxChat() {
 
   const disconnectWebSocket = useCallback(() => {
     if (socketRef.current && connected) {
-      socketRef.current.close(1000, 'Client closing');
+      socketRef.current.disconnect();
     }
   }, [connected]);
 
-  const addMessage = useCallback((role: 'user' | 'bot', text: string) => {
+  const addMessage = useCallback((role: 'user' | 'bot', text: string, sender?: string) => {
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
     const minutes = now.getMinutes().toString().padStart(2, '0');
     const timestamp = `${hours}:${minutes}`;
     const messageId = Date.now().toString() + Math.random().toString(36);
-    setMessages(prev => [...prev, { role, text, timestamp, id: messageId }]);
+    setMessages(prev => [...prev, { role, text, timestamp, id: messageId, sender }]);
   }, []);
 
   const addStreamingMessage = useCallback(() => {
@@ -141,8 +144,8 @@ export default function AuralynxChat() {
   }, []);
 
   const handleStartConversation = useCallback((modelA: string, modelB: string) => {
-    if (!connected || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-      alert('Not connected! Please connect WebSocket first.');
+    if (!connected || !socketRef.current || !socketRef.current.connected) {
+      alert('Not connected! Please connect Socket.io first.');
       return;
     }
 
@@ -151,15 +154,11 @@ export default function AuralynxChat() {
     addMessage('user', message);
     
     // Send to backend
-    socketRef.current.send(JSON.stringify({ 
-      type: 'start_conversation',
+    socketRef.current.emit('start_conversation', { 
       modelA,
       modelB 
-    }));
-
-    // Start streaming response
-    addStreamingMessage();
-  }, [connected, addMessage, addStreamingMessage]);
+    });
+  }, [connected, addMessage]);
 
   const toggleRobots = useCallback(() => {
     alert('Café scenes are visible on larger screens. Rotate your device or widen the window to see the cozy atmosphere!');
