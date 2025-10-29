@@ -131,11 +131,17 @@ const personalityMap = {
 };
 
 // Function to call Ollama API
-async function callOllama(prompt, model = 'llama3.2') {
+async function callOllama(prompt, model = 'llama3.2', personality = null) {
   try {
+    // Add personality to prompt if provided
+    let fullPrompt = prompt;
+    if (personality) {
+      fullPrompt = `${personality}\n\n${prompt}`;
+    }
+    
     const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
       model: model,
-      prompt: prompt,
+      prompt: fullPrompt,
       stream: false
     });
     return response.data.response;
@@ -503,7 +509,10 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
   });
   
   try {
-    const rawResponse = await callOllama(prompt, modelMap[currentModel]);
+    // Get personality for the current model
+    const personality = personalityMap[modelMap[currentModel]] || personalityMap['llama3.2:latest'];
+    
+    const rawResponse = await callOllama(prompt, modelMap[currentModel], personality);
     
     // Parse and clean the response using Message Parser
     const parsedMessage = messageParser.parseMessage(rawResponse, currentName, memoryContext);
@@ -518,7 +527,7 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
         'Please provide a simple, clear response.', 
         memoryContext
       );
-      const fallbackResponse = await callOllama(fallbackPrompt, modelMap[currentModel]);
+      const fallbackResponse = await callOllama(fallbackPrompt, modelMap[currentModel], personality);
       const fallbackParsed = messageParser.parseMessage(fallbackResponse, currentName, memoryContext);
       
       if (fallbackParsed.isValid) {
