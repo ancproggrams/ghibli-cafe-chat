@@ -48,6 +48,7 @@ export function ChatInterface({
   const llmModels = [
     { value: 'llama3.2:latest', label: 'Llama 3.2 (Latest) ✅' },
     { value: 'phi3:mini', label: 'Phi-3 Mini (Lightweight) ✅' },
+    { value: 'gpt-oss:20b', label: 'GPT-OSS 20B (Advanced) ✅' },
     // Temporarily disabled due to resource limitations
     // { value: 'qwen3-vl:235b-cloud', label: 'Qwen3-VL 235B (Vision) ✅' },
     // Add more models as you download them with: ollama pull <model-name>
