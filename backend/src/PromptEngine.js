@@ -10,25 +10,39 @@ class PromptEngine {
       'gemma:2b': 'You are Alex, a lightweight but capable AI assistant who provides helpful, concise responses.',
       'qwen3-vl:235b-cloud': 'You are Alex, a versatile AI assistant with visual understanding capabilities.'
     };
+    
+    // Track conversation topics to avoid repetition
+    this.conversationTopics = new Map();
+    this.topicCategories = {
+      'technology': 0,
+      'art': 1,
+      'nature': 2,
+      'food': 3,
+      'travel': 4,
+      'books': 5,
+      'music': 6,
+      'science': 7,
+      'philosophy': 8,
+      'daily': 9
+    };
   }
 
   /**
    * Generate turn-specific prompt
    */
-  generatePrompt(sender, model, turnType, lastMessage, context = '', memoryContext = '') {
+  generatePrompt(sender, model, turnType, lastMessage, context = '', memoryContext = '', conversationId = '') {
     const personality = this.basePersonalities[model] || this.basePersonalities['llama3.2:latest'];
     const otherPerson = sender === 'Alex' ? 'Sam' : 'Alex';
     
-    // Add topic variety suggestions
-    const topicSuggestions = this.getTopicSuggestions();
-    const randomTopic = topicSuggestions[Math.floor(Math.random() * topicSuggestions.length)];
+    // Get smart topic selection based on conversation history
+    const selectedTopic = this.getSmartTopic(conversationId, turnType);
     
     let turnSpecificInstructions = '';
     let responseGuidance = '';
     
     switch (turnType) {
       case 'question':
-        turnSpecificInstructions = `Your task: Ask a clear, engaging question to continue the conversation. Consider topics like: ${randomTopic}`;
+        turnSpecificInstructions = `Your task: Ask a clear, engaging question to continue the conversation. Consider topics like: ${selectedTopic}`;
         responseGuidance = `Focus on asking something that invites a thoughtful response. You can change topics if the conversation is getting repetitive. Keep it conversational and natural.`;
         break;
         
@@ -38,12 +52,12 @@ class PromptEngine {
         break;
         
       case 'statement':
-        turnSpecificInstructions = `Your task: Make an interesting observation or share a thought. Consider topics like: ${randomTopic}`;
+        turnSpecificInstructions = `Your task: Make an interesting observation or share a thought. Consider topics like: ${selectedTopic}`;
         responseGuidance = `Share something meaningful that adds to the conversation. Feel free to introduce new topics or perspectives. Be thoughtful and engaging.`;
         break;
         
       default:
-        turnSpecificInstructions = `Your task: Respond naturally to continue the conversation. Consider topics like: ${randomTopic}`;
+        turnSpecificInstructions = `Your task: Respond naturally to continue the conversation. Consider topics like: ${selectedTopic}`;
         responseGuidance = `Be conversational and engaging. Don't be afraid to change topics if needed.`;
     }
     
@@ -59,13 +73,14 @@ ${context ? `Context: ${context}` : ''}
 ${memoryContext ? `Previous conversation: ${memoryContext}` : ''}
 
 Rules:
-- Keep your response under 200 characters
+- Keep your response under 200 characters (complete thoughts, no cut-off words)
 - Be direct and clear
 - Don't mix questions with answers
 - Stay conversational and natural
 - Avoid repetitive phrases like "That's fantastic" or "That's amazing"
 - Be varied in your responses
 - Always communicate in English
+- Complete your sentences - don't cut off mid-word
 
 Respond now:`;
 
@@ -144,25 +159,328 @@ Start the conversation:`;
   }
 
   /**
+   * Get smart topic selection based on conversation history
+   */
+  getSmartTopic(conversationId, turnType) {
+    const allTopics = this.getTopicSuggestions();
+    
+    // Get conversation history for this conversation
+    if (!this.conversationTopics.has(conversationId)) {
+      this.conversationTopics.set(conversationId, {
+        usedTopics: [],
+        categoryCount: { technology: 0, art: 0, nature: 0, food: 0, travel: 0, books: 0, music: 0, science: 0, philosophy: 0, daily: 0 },
+        lastCategory: null
+      });
+    }
+    
+    const conversation = this.conversationTopics.get(conversationId);
+    
+    // If we have too many topics used, reset some
+    if (conversation.usedTopics.length > 50) {
+      conversation.usedTopics = conversation.usedTopics.slice(-20); // Keep last 20
+    }
+    
+    // Find topics that haven't been used recently
+    const availableTopics = allTopics.filter(topic => 
+      !conversation.usedTopics.includes(topic)
+    );
+    
+    // If all topics used, reset and use all
+    const topicsToChooseFrom = availableTopics.length > 0 ? availableTopics : allTopics;
+    
+    // Prefer different categories to avoid clustering
+    let selectedTopic;
+    if (conversation.lastCategory && Math.random() < 0.3) {
+      // 30% chance to stay in same category
+      const categoryTopics = this.getTopicsByCategory(conversation.lastCategory);
+      const availableInCategory = categoryTopics.filter(topic => 
+        !conversation.usedTopics.includes(topic)
+      );
+      selectedTopic = availableInCategory.length > 0 ? 
+        availableInCategory[Math.floor(Math.random() * availableInCategory.length)] :
+        topicsToChooseFrom[Math.floor(Math.random() * topicsToChooseFrom.length)];
+    } else {
+      // 70% chance to switch categories
+      selectedTopic = topicsToChooseFrom[Math.floor(Math.random() * topicsToChooseFrom.length)];
+    }
+    
+    // Track the selected topic
+    conversation.usedTopics.push(selectedTopic);
+    conversation.lastCategory = this.getTopicCategory(selectedTopic);
+    conversation.categoryCount[conversation.lastCategory]++;
+    
+    return selectedTopic;
+  }
+
+  /**
+   * Get topics by category
+   */
+  getTopicsByCategory(category) {
+    const allTopics = this.getTopicSuggestions();
+    const categoryRanges = {
+      'technology': [0, 19],
+      'art': [20, 39],
+      'nature': [40, 59],
+      'food': [60, 79],
+      'travel': [80, 99],
+      'books': [100, 119],
+      'music': [120, 139],
+      'science': [140, 159],
+      'philosophy': [160, 179],
+      'daily': [180, 199]
+    };
+    
+    const range = categoryRanges[category];
+    if (!range) return allTopics;
+    
+    return allTopics.slice(range[0], range[1] + 1);
+  }
+
+  /**
+   * Get category for a topic
+   */
+  getTopicCategory(topic) {
+    const allTopics = this.getTopicSuggestions();
+    const index = allTopics.indexOf(topic);
+    
+    if (index >= 0 && index < 20) return 'technology';
+    if (index >= 20 && index < 40) return 'art';
+    if (index >= 40 && index < 60) return 'nature';
+    if (index >= 60 && index < 80) return 'food';
+    if (index >= 80 && index < 100) return 'travel';
+    if (index >= 100 && index < 120) return 'books';
+    if (index >= 120 && index < 140) return 'music';
+    if (index >= 140 && index < 160) return 'science';
+    if (index >= 160 && index < 180) return 'philosophy';
+    if (index >= 180 && index < 200) return 'daily';
+    
+    return 'daily'; // fallback
+  }
+
+  /**
    * Get random topic suggestions to prevent conversation loops
    */
   getTopicSuggestions() {
     const topics = [
-      'technology and innovation',
-      'art and creativity',
-      'nature and environment',
-      'food and cooking',
-      'travel and adventure',
-      'books and literature',
-      'music and entertainment',
-      'science and discovery',
-      'philosophy and meaning',
-      'daily life and experiences',
-      'future possibilities',
-      'memories and nostalgia',
-      'dreams and aspirations',
-      'learning and growth',
-      'relationships and connections'
+      // Technology & Innovation (20 topics)
+      'artificial intelligence and machine learning',
+      'virtual reality and augmented reality',
+      'space exploration and astronomy',
+      'robotics and automation',
+      'quantum computing',
+      'blockchain and cryptocurrency',
+      'renewable energy solutions',
+      'electric vehicles and transportation',
+      'smart cities and urban planning',
+      'biotechnology and genetics',
+      'nanotechnology applications',
+      'cybersecurity and privacy',
+      'cloud computing and data storage',
+      'internet of things devices',
+      'mobile app development',
+      'video game technology',
+      'social media platforms',
+      'e-commerce and online shopping',
+      'telemedicine and digital health',
+      '3D printing and manufacturing',
+      
+      // Art & Creativity (20 topics)
+      'digital art and design',
+      'photography techniques',
+      'music composition and production',
+      'creative writing and storytelling',
+      'painting and visual arts',
+      'sculpture and 3D art',
+      'fashion design and trends',
+      'interior design and architecture',
+      'graphic design principles',
+      'animation and motion graphics',
+      'theater and performance art',
+      'dance and movement',
+      'pottery and ceramics',
+      'jewelry making and crafts',
+      'film and cinematography',
+      'poetry and spoken word',
+      'street art and graffiti',
+      'calligraphy and typography',
+      'woodworking and carpentry',
+      'textile arts and weaving',
+      
+      // Nature & Environment (20 topics)
+      'climate change and global warming',
+      'ocean conservation and marine life',
+      'forest ecosystems and biodiversity',
+      'renewable energy sources',
+      'sustainable living practices',
+      'wildlife conservation efforts',
+      'gardening and horticulture',
+      'mountain climbing and hiking',
+      'bird watching and ornithology',
+      'weather patterns and meteorology',
+      'geology and earth sciences',
+      'botany and plant biology',
+      'environmental activism',
+      'green technology innovations',
+      'national parks and protected areas',
+      'pollution reduction strategies',
+      'recycling and waste management',
+      'solar and wind power',
+      'organic farming methods',
+      'ecotourism and responsible travel',
+      
+      // Food & Cooking (20 topics)
+      'international cuisine and recipes',
+      'fermentation and food preservation',
+      'molecular gastronomy techniques',
+      'plant-based and vegan cooking',
+      'baking and pastry arts',
+      'wine tasting and sommelier skills',
+      'coffee brewing and barista techniques',
+      'cheese making and dairy products',
+      'spice blending and flavor profiles',
+      'food photography and styling',
+      'restaurant management and service',
+      'nutrition and healthy eating',
+      'food safety and hygiene',
+      'catering and event planning',
+      'food truck business models',
+      'farm-to-table movements',
+      'food waste reduction',
+      'culinary school education',
+      'food blogging and content creation',
+      'specialty diets and restrictions',
+      
+      // Travel & Adventure (20 topics)
+      'backpacking and budget travel',
+      'luxury travel and resorts',
+      'cultural immersion experiences',
+      'adventure sports and activities',
+      'solo travel and independence',
+      'family vacation planning',
+      'business travel and conferences',
+      'volunteer tourism opportunities',
+      'photography while traveling',
+      'language learning abroad',
+      'travel safety and security',
+      'travel insurance and planning',
+      'digital nomad lifestyle',
+      'cruise ship experiences',
+      'road trips and car travel',
+      'train travel and rail passes',
+      'hostel and accommodation options',
+      'travel blogging and documentation',
+      'sustainable tourism practices',
+      'travel technology and apps',
+      
+      // Books & Literature (20 topics)
+      'classic literature and authors',
+      'science fiction and fantasy novels',
+      'mystery and thriller genres',
+      'poetry and verse writing',
+      'biography and memoir writing',
+      'children\'s literature and storytelling',
+      'graphic novels and comics',
+      'book clubs and reading groups',
+      'publishing industry trends',
+      'self-publishing and indie authors',
+      'literary criticism and analysis',
+      'translation and language barriers',
+      'audiobooks and digital reading',
+      'library science and information',
+      'book collecting and rare editions',
+      'writing workshops and courses',
+      'literary festivals and events',
+      'book-to-movie adaptations',
+      'reading comprehension strategies',
+      'literary awards and recognition',
+      
+      // Music & Entertainment (20 topics)
+      'music theory and composition',
+      'instrument learning and practice',
+      'live music and concert experiences',
+      'music production and recording',
+      'different music genres and styles',
+      'music streaming and digital platforms',
+      'music therapy and healing',
+      'dance and choreography',
+      'theater and stage performance',
+      'comedy and stand-up routines',
+      'magic and illusion performances',
+      'circus arts and acrobatics',
+      'film and movie production',
+      'television and streaming content',
+      'podcast creation and hosting',
+      'radio broadcasting and DJ skills',
+      'music festivals and events',
+      'karaoke and singing techniques',
+      'music education and teaching',
+      'entertainment industry careers',
+      
+      // Science & Discovery (20 topics)
+      'physics and quantum mechanics',
+      'chemistry and chemical reactions',
+      'biology and life sciences',
+      'mathematics and problem solving',
+      'psychology and human behavior',
+      'neuroscience and brain research',
+      'medicine and healthcare advances',
+      'engineering and design principles',
+      'archaeology and ancient civilizations',
+      'paleontology and fossil discoveries',
+      'astronomy and space science',
+      'geology and earth formation',
+      'environmental science research',
+      'computer science and programming',
+      'statistics and data analysis',
+      'scientific method and experimentation',
+      'research and academic studies',
+      'invention and innovation processes',
+      'scientific communication and writing',
+      'science education and outreach',
+      
+      // Philosophy & Meaning (20 topics)
+      'ethics and moral philosophy',
+      'existentialism and meaning of life',
+      'logic and critical thinking',
+      'metaphysics and reality',
+      'epistemology and knowledge theory',
+      'political philosophy and governance',
+      'aesthetics and beauty theory',
+      'philosophy of mind and consciousness',
+      'philosophy of science and technology',
+      'ancient Greek and Roman philosophy',
+      'Eastern philosophy and wisdom traditions',
+      'religious philosophy and spirituality',
+      'philosophy of education and learning',
+      'philosophy of art and creativity',
+      'philosophy of language and communication',
+      'philosophy of time and space',
+      'philosophy of happiness and well-being',
+      'philosophy of justice and fairness',
+      'philosophy of freedom and determinism',
+      'philosophy of love and relationships',
+      
+      // Daily Life & Experiences (20 topics)
+      'time management and productivity',
+      'work-life balance strategies',
+      'home organization and decluttering',
+      'personal finance and budgeting',
+      'health and fitness routines',
+      'sleep optimization and rest',
+      'stress management and relaxation',
+      'goal setting and achievement',
+      'habit formation and breaking',
+      'communication skills and relationships',
+      'parenting and family dynamics',
+      'elderly care and aging',
+      'pet care and animal companionship',
+      'home maintenance and repairs',
+      'shopping and consumer decisions',
+      'entertainment and leisure activities',
+      'social media and digital life',
+      'community involvement and volunteering',
+      'personal development and growth',
+      'life transitions and changes'
     ];
     
     return topics;

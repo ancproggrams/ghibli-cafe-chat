@@ -147,8 +147,8 @@ async function callOllama(prompt, model = 'llama3.2', personality = null) {
       options: {
         temperature: 0.8,
         top_p: 0.9,
-        num_predict: 100, // Limit response length
-        stop: ['\n\n', 'Human:', 'Assistant:']
+        num_predict: 200, // Allow up to 200 characters
+        stop: ['\n\n', 'Human:', 'Assistant:', 'Alex:', 'Sam:']
       }
     }, {
       timeout: 15000, // Reduced to 15 second timeout
@@ -523,7 +523,8 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
     suggestedTurnType, 
     lastMessage, 
     '', 
-    memoryContext
+    memoryContext,
+    conversationId
   );
   
   // Send typing indicator
