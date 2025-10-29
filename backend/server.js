@@ -145,12 +145,13 @@ async function callOllama(prompt, model = 'llama3.2', personality = null) {
       prompt: fullPrompt,
       stream: false,
       options: {
-        temperature: 0.7,
+        temperature: 0.8,
         top_p: 0.9,
-        max_tokens: 150
+        num_predict: 100, // Limit response length
+        stop: ['\n\n', 'Human:', 'Assistant:']
       }
     }, {
-      timeout: 30000, // 30 second timeout
+      timeout: 15000, // Reduced to 15 second timeout
       headers: {
         'Content-Type': 'application/json'
       }
@@ -604,7 +605,7 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
       continueConversationLoop(socket, conversationId, modelA, modelB, 
         isATurn ? parsedMessage.content : lastAMessage, 
         isATurn ? lastBMessage : parsedMessage.content);
-    }, 10000); // 10 second delay between messages
+    }, 8000); // 8 second delay between messages for faster flow
     
   } catch (error) {
     console.error('Error in conversation loop:', error);
