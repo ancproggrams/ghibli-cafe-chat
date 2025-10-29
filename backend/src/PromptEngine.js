@@ -15,15 +15,16 @@ class PromptEngine {
     this.conversationTopics = new Map();
     this.topicCategories = {
       'technology': 0,
-      'art': 1,
-      'nature': 2,
-      'food': 3,
-      'travel': 4,
-      'books': 5,
-      'music': 6,
-      'science': 7,
-      'philosophy': 8,
-      'daily': 9
+      'robotics': 1,
+      'art': 2,
+      'nature': 3,
+      'food': 4,
+      'travel': 5,
+      'books': 6,
+      'music': 7,
+      'science': 8,
+      'philosophy': 9,
+      'daily': 10
     };
   }
 
@@ -168,7 +169,7 @@ Start the conversation:`;
     if (!this.conversationTopics.has(conversationId)) {
       this.conversationTopics.set(conversationId, {
         usedTopics: [],
-        categoryCount: { technology: 0, art: 0, nature: 0, food: 0, travel: 0, books: 0, music: 0, science: 0, philosophy: 0, daily: 0 },
+        categoryCount: { technology: 0, robotics: 0, art: 0, nature: 0, food: 0, travel: 0, books: 0, music: 0, science: 0, philosophy: 0, daily: 0 },
         lastCategory: null
       });
     }
@@ -219,15 +220,16 @@ Start the conversation:`;
     const allTopics = this.getTopicSuggestions();
     const categoryRanges = {
       'technology': [0, 19],
-      'art': [20, 39],
-      'nature': [40, 59],
-      'food': [60, 79],
-      'travel': [80, 99],
-      'books': [100, 119],
-      'music': [120, 139],
-      'science': [140, 159],
-      'philosophy': [160, 179],
-      'daily': [180, 199]
+      'robotics': [20, 39],
+      'art': [40, 59],
+      'nature': [60, 79],
+      'food': [80, 99],
+      'travel': [100, 119],
+      'books': [120, 139],
+      'music': [140, 159],
+      'science': [160, 179],
+      'philosophy': [180, 199],
+      'daily': [200, 219]
     };
     
     const range = categoryRanges[category];
@@ -244,15 +246,16 @@ Start the conversation:`;
     const index = allTopics.indexOf(topic);
     
     if (index >= 0 && index < 20) return 'technology';
-    if (index >= 20 && index < 40) return 'art';
-    if (index >= 40 && index < 60) return 'nature';
-    if (index >= 60 && index < 80) return 'food';
-    if (index >= 80 && index < 100) return 'travel';
-    if (index >= 100 && index < 120) return 'books';
-    if (index >= 120 && index < 140) return 'music';
-    if (index >= 140 && index < 160) return 'science';
-    if (index >= 160 && index < 180) return 'philosophy';
-    if (index >= 180 && index < 200) return 'daily';
+    if (index >= 20 && index < 40) return 'robotics';
+    if (index >= 40 && index < 60) return 'art';
+    if (index >= 60 && index < 80) return 'nature';
+    if (index >= 80 && index < 100) return 'food';
+    if (index >= 100 && index < 120) return 'travel';
+    if (index >= 120 && index < 140) return 'books';
+    if (index >= 140 && index < 160) return 'music';
+    if (index >= 160 && index < 180) return 'science';
+    if (index >= 180 && index < 200) return 'philosophy';
+    if (index >= 200 && index < 220) return 'daily';
     
     return 'daily'; // fallback
   }
@@ -283,6 +286,28 @@ Start the conversation:`;
       'e-commerce and online shopping',
       'telemedicine and digital health',
       '3D printing and manufacturing',
+      
+      // Robotics & AI Future (20 topics)
+      'what if robots became more dominant than humans',
+      'how robots could aid humans in daily life',
+      'robot-human collaboration in the workplace',
+      'ethical implications of advanced robotics',
+      'robots taking over dangerous jobs',
+      'artificial general intelligence possibilities',
+      'robot companions and emotional support',
+      'autonomous vehicles and transportation',
+      'robots in healthcare and surgery',
+      'human-robot social interactions',
+      'robot rights and consciousness debates',
+      'robots in space exploration missions',
+      'artificial intelligence surpassing human intelligence',
+      'robot teachers and educational assistants',
+      'robots in disaster response and rescue',
+      'human augmentation and cyborg technology',
+      'robot artists and creative machines',
+      'artificial intelligence in decision making',
+      'robots replacing human workers',
+      'the future of human-robot relationships',
       
       // Art & Creativity (20 topics)
       'digital art and design',
