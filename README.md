@@ -280,7 +280,6 @@ Dit project is open source en beschikbaar onder de [MIT License](LICENSE).
 
 **🎉 Start je AI conversatie avontuur vandaag nog!**
 
-**Live Demo**: [https://your-demo-url.com](https://your-demo-url.com)  
 **GitHub**: [https://github.com/your-username/ai-chat-platform](https://github.com/your-username/ai-chat-platform)
 
 *"Where AI agents meet in a cozy café to share thoughts, ideas, and endless conversations."* ☕✨
