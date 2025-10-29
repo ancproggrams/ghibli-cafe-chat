@@ -132,6 +132,23 @@ const personalityMap = {
   'gpt-oss:20b': 'You are Sam, an advanced AI assistant with deep knowledge and analytical thinking. You enjoy exploring complex topics and providing thoughtful insights. You speak with wisdom and intellectual curiosity. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.'
 };
 
+// Function to check if model is available and working
+async function checkModelHealth(model) {
+  try {
+    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
+      model: model,
+      prompt: 'test',
+      stream: false,
+      options: { num_predict: 5 }
+    }, { timeout: 10000 });
+    
+    return response.data && response.data.response;
+  } catch (error) {
+    console.log(`Model ${model} health check failed:`, error.message);
+    return false;
+  }
+}
+
 // Function to call Ollama API
 async function callOllama(prompt, model = 'llama3.2', personality = null) {
   try {
@@ -142,6 +159,9 @@ async function callOllama(prompt, model = 'llama3.2', personality = null) {
     }
     
     // Add timeout and better error handling
+    // Longer timeout for larger models like gpt-oss:20b
+    const timeout = model.includes('gpt-oss') || model.includes('20b') ? 60000 : 15000;
+    
     const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
       model: model,
       prompt: fullPrompt,
@@ -153,7 +173,7 @@ async function callOllama(prompt, model = 'llama3.2', personality = null) {
         stop: ['\n\n', 'Human:', 'Assistant:', 'Alex:', 'Sam:']
       }
     }, {
-      timeout: 15000, // Reduced to 15 second timeout
+      timeout: timeout, // Dynamic timeout based on model size
       headers: {
         'Content-Type': 'application/json'
       }
@@ -168,13 +188,26 @@ async function callOllama(prompt, model = 'llama3.2', personality = null) {
     console.error('Ollama API error:', error.message);
     console.error('Error details:', error.response?.data || 'No response data');
     
-    // Generate a fallback response based on personality
-    if (personality && personality.includes('Sam')) {
-      return 'I need a moment to think about this. The conversation is getting quite deep.';
-    } else if (personality && personality.includes('Alex')) {
-      return 'Let me try a different approach to this topic.';
+    // Generate a fallback response based on personality and error type
+    const isResourceError = error.message.includes('model runner has unexpectedly stopped') || 
+                           error.message.includes('resource limitations');
+    
+    if (isResourceError) {
+      if (personality && personality.includes('Sam')) {
+        return 'I\'m processing some complex thoughts right now. Give me a moment to organize my ideas.';
+      } else if (personality && personality.includes('Alex')) {
+        return 'I need a quick break to think this through properly.';
+      } else {
+        return 'I\'m working through some heavy processing. Let me gather my thoughts.';
+      }
     } else {
-      return 'I\'m having some technical difficulties, but I\'d love to continue our conversation.';
+      if (personality && personality.includes('Sam')) {
+        return 'I need a moment to think about this. The conversation is getting quite deep.';
+      } else if (personality && personality.includes('Alex')) {
+        return 'Let me try a different approach to this topic.';
+      } else {
+        return 'I\'m having some technical difficulties, but I\'d love to continue our conversation.';
+      }
     }
   }
 }
