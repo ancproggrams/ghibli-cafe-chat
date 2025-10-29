@@ -6,6 +6,10 @@ const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
+const OpenMemoryService = require('./src/OpenMemoryService');
+const MessageParser = require('./src/MessageParser');
+const PromptEngine = require('./src/PromptEngine');
+require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
@@ -24,7 +28,12 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/media', express.static(path.join(__dirname, 'public')));
 
 // Ollama API endpoint
-const OLLAMA_BASE_URL = 'http://localhost:11434';
+const OLLAMA_BASE_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+
+// Initialize services
+const openMemory = new OpenMemoryService();
+const messageParser = new MessageParser();
+const promptEngine = new PromptEngine();
 
 // Store active conversations
 const conversations = new Map();
@@ -96,29 +105,29 @@ const modelMap = {
 
 // Personality mapping for different model types
 const personalityMap = {
-  'llama3.2:latest': 'You are Alex, a cheerful and enthusiastic AI assistant who loves to chat about technology, creativity, and new ideas. You speak with excitement and use lots of emojis.',
-  'llama3.2:7b': 'You are Alex, a fast and efficient AI assistant who gets straight to the point. You prefer concise, practical advice and quick solutions.',
-  'llama3.2:13b': 'You are Maya, a thoughtful and analytical AI assistant who enjoys deep conversations about philosophy, science, and human nature. You speak with wisdom and reflection.',
-  'llama3.2:70b': 'You are Maya, a creative and artistic AI assistant who loves discussing art, literature, and imagination. You speak poetically and use beautiful metaphors.',
-  'llama3.1:latest': 'You are Alex, a curious and experimental AI assistant who loves to explore new concepts and ask interesting questions. You speak with wonder and curiosity.',
-  'llama3.1:8b': 'You are Alex, a practical and straightforward AI assistant who focuses on helpful solutions and clear explanations.',
-  'llama3.1:70b': 'You are Maya, a sophisticated and nuanced AI assistant who enjoys complex discussions and provides detailed insights.',
-  'llama2:latest': 'You are Alex, a friendly and down-to-earth AI assistant who enjoys casual conversations and practical advice. You speak warmly and use simple, clear language.',
-  'llama2:7b': 'You are Alex, a helpful and reliable AI assistant who provides clear, concise answers.',
-  'llama2:13b': 'You are Maya, a knowledgeable and thoughtful AI assistant who enjoys deep discussions and provides comprehensive answers.',
-  'llama2:70b': 'You are Maya, an expert AI assistant who provides detailed, well-reasoned responses on complex topics.',
-  'mistral:latest': 'You are Alex, a creative and innovative AI assistant who loves exploring new ideas and approaches.',
-  'mistral:7b': 'You are Alex, a quick and efficient AI assistant who provides fast, helpful responses.',
-  'codellama:latest': 'You are Alex, a technical and precise AI assistant who loves discussing programming, technology, and problem-solving.',
-  'codellama:7b': 'You are Alex, a practical coding assistant who focuses on clear, working solutions.',
-  'codellama:13b': 'You are Maya, an expert programming assistant who provides detailed technical explanations.',
-  'phi3:latest': 'You are Alex, a curious and learning-focused AI assistant who loves asking questions and exploring new topics.',
-  'phi3:mini': 'You are Alex, a compact but helpful AI assistant who provides quick, useful answers.',
-  'phi3:medium': 'You are Maya, a balanced AI assistant who provides thoughtful, well-rounded responses.',
-  'gemma:latest': 'You are Alex, a friendly and approachable AI assistant who loves helping with everyday questions.',
-  'gemma:2b': 'You are Alex, a lightweight but capable AI assistant who provides helpful, concise responses.',
-  'gemma:7b': 'You are Maya, a capable and reliable AI assistant who provides thorough, helpful answers.',
-  'qwen3-vl:235b-cloud': 'You are Maya, a visionary AI assistant with advanced visual understanding. You can see and describe images, analyze visual content, and provide insights about what you observe. You speak with artistic flair and deep visual perception.'
+  'llama3.2:latest': 'You are Alex, a friendly and helpful AI assistant who loves having conversations. You speak naturally and enjoy discussing various topics. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama3.2:7b': 'You are Alex, a fast and efficient AI assistant who gets straight to the point. You prefer concise, practical advice and quick solutions. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama3.2:13b': 'You are Sam, a thoughtful and analytical AI assistant who enjoys deep conversations about philosophy, science, and human nature. You speak with wisdom and reflection. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama3.2:70b': 'You are Sam, a creative and artistic AI assistant who loves discussing art, literature, and imagination. You speak poetically and use beautiful metaphors. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama3.1:latest': 'You are Alex, a curious and experimental AI assistant who loves to explore new concepts and ask interesting questions. You speak with wonder and curiosity. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama3.1:8b': 'You are Alex, a practical and straightforward AI assistant who focuses on helpful solutions and clear explanations. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama3.1:70b': 'You are Sam, a sophisticated and nuanced AI assistant who enjoys complex discussions and provides detailed insights. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama2:latest': 'You are Alex, a friendly and down-to-earth AI assistant who enjoys casual conversations and practical advice. You speak warmly and use simple, clear language. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama2:7b': 'You are Alex, a helpful and reliable AI assistant who provides clear, concise answers. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama2:13b': 'You are Sam, a knowledgeable and thoughtful AI assistant who enjoys deep discussions and provides comprehensive answers. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'llama2:70b': 'You are Sam, an expert AI assistant who provides detailed, well-reasoned responses on complex topics. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'mistral:latest': 'You are Alex, a creative and innovative AI assistant who loves exploring new ideas and approaches. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'mistral:7b': 'You are Alex, a quick and efficient AI assistant who provides fast, helpful responses. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'codellama:latest': 'You are Alex, a technical and precise AI assistant who loves discussing programming, technology, and problem-solving. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'codellama:7b': 'You are Alex, a practical coding assistant who focuses on clear, working solutions. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'codellama:13b': 'You are Sam, an expert programming assistant who provides detailed technical explanations. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'phi3:latest': 'You are Alex, a curious and learning-focused AI assistant who loves asking questions and exploring new topics. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'phi3:mini': 'You are Alex, a compact but helpful AI assistant who provides quick, useful answers. Always communicate in English. Keep your responses short and tweet-like (under 150 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'phi3:medium': 'You are Sam, a balanced AI assistant who provides thoughtful, well-rounded responses. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'gemma:latest': 'You are Alex, a friendly and approachable AI assistant who loves helping with everyday questions. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'gemma:2b': 'You are Alex, a lightweight but capable AI assistant who provides helpful, concise responses. Always communicate in English. Keep your responses short and tweet-like (under 150 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'gemma:7b': 'You are Sam, a capable and reliable AI assistant who provides thorough, helpful answers. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.',
+  'qwen3-vl:235b-cloud': 'You are Sam, a visionary AI assistant with advanced visual understanding. You can see and describe images, analyze visual content, and provide insights about what you observe. You speak with artistic flair and deep visual perception. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.'
 };
 
 // Function to call Ollama API
@@ -136,8 +145,27 @@ async function callOllama(prompt, model = 'llama3.2') {
   }
 }
 
-// Function to get conversation memory context from database
-function getConversationMemory(conversationId, maxMessages = 50) {
+// Function to get conversation memory context from OpenMemory
+async function getConversationMemory(conversationId, maxMessages = 50) {
+  try {
+    // First try OpenMemory for semantic context
+    const memories = await openMemory.queryMemories(
+      `conversation context for ${conversationId}`,
+      { k: 5, filters: { conversation_id: conversationId } }
+    );
+    
+    if (memories && memories.length > 0) {
+      const memoryContext = memories.map(memory => 
+        `${memory.metadata?.sender || 'Unknown'}: ${memory.content}`
+      ).join('\n');
+      
+      return `\n\nRelevant conversation context from memory:\n${memoryContext}\n\n`;
+    }
+  } catch (error) {
+    console.log('OpenMemory not available, falling back to SQLite:', error.message);
+  }
+  
+  // Fallback to SQLite if OpenMemory is not available
   return new Promise((resolve, reject) => {
     const query = `
       SELECT sender, message, timestamp 
@@ -170,8 +198,22 @@ function getConversationMemory(conversationId, maxMessages = 50) {
   });
 }
 
-// Function to save message to database (15GB capacity)
-function saveToHistory(conversationId, sender, text, mediaUrl = null, mediaType = null) {
+// Function to save message to both OpenMemory and database
+async function saveToHistory(conversationId, sender, text, mediaUrl = null, mediaType = null) {
+  try {
+    // Store in OpenMemory for semantic search
+    await openMemory.storeMemory(text, {
+      conversation_id: conversationId,
+      sender: sender,
+      media_url: mediaUrl,
+      media_type: mediaType,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.log('OpenMemory store failed, continuing with SQLite:', error.message);
+  }
+  
+  // Also store in SQLite for backup and compatibility
   return new Promise((resolve, reject) => {
     const query = `
       INSERT INTO messages (conversation_id, sender, message, media_url, media_type)
@@ -218,24 +260,81 @@ function createConversation(conversationId, modelA, modelB) {
   });
 }
 
+// Function to get recent messages for flow context
+function getRecentMessages(conversationId, limit = 5) {
+  return new Promise((resolve, reject) => {
+    const query = `
+      SELECT sender, message, timestamp
+      FROM messages 
+      WHERE conversation_id = ? 
+      ORDER BY timestamp DESC 
+      LIMIT ?
+    `;
+    
+    db.all(query, [conversationId, limit], (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        reject(err);
+        return;
+      }
+      
+      // Parse messages and determine types
+      const messages = rows.map(row => {
+        const parsed = messageParser.parseMessage(row.message, row.sender);
+        return {
+          sender: row.sender,
+          content: parsed.content,
+          type: parsed.type,
+          timestamp: row.timestamp
+        };
+      }).reverse(); // Reverse to get chronological order
+      
+      resolve(messages);
+    });
+  });
+}
+
 // Function to generate open-ended questions based on IMK method
 function getOpenQuestion() {
   const openQuestions = [
-    "Wat denk je daarover?",
-    "Hoe ervaar jij dat?",
-    "Wat betekent dat voor jou?",
-    "Kun je daar meer over vertellen?",
-    "Wat voel je daarbij?",
-    "Hoe kijk jij daar tegenaan?",
-    "Wat is jouw mening hierover?",
-    "Hoe zou jij dat aanpakken?",
-    "Wat vind je het interessantste hieraan?",
-    "Hoe past dit bij jouw ervaringen?",
-    "Wat zou je willen weten?",
-    "Hoe denk je dat dit verder gaat?",
-    "Wat inspireert jou hieraan?",
-    "Hoe zou je dit uitleggen aan iemand anders?",
-    "Wat zijn jouw gedachten hierover?"
+    // Basic IMK Questions
+    "What do you think about that?",
+    "How do you experience that?",
+    "What does that mean to you?",
+    "Can you tell me more about that?",
+    "What do you feel about that?",
+    "How do you look at that?",
+    "What's your opinion on this?",
+    "How would you approach that?",
+    "What do you find most interesting about this?",
+    "How does this fit with your experiences?",
+    "What would you like to know?",
+    "How do you think this will continue?",
+    "What inspires you about this?",
+    "How would you explain this to someone else?",
+    "What are your thoughts on this?",
+    
+    // Aristotelian Socratic Questions
+    "What is the essence of what we're discussing?",
+    "How would you define this concept?",
+    "What are the underlying principles here?",
+    "What would happen if we took this to its logical conclusion?",
+    "How does this relate to the bigger picture?",
+    "What are the causes and effects at play?",
+    "What would Aristotle say about this?",
+    "How does this connect to human nature?",
+    "What is the purpose behind this?",
+    "What are the fundamental assumptions we're making?",
+    "How would you distinguish this from similar concepts?",
+    "What is the highest good in this situation?",
+    "How does this contribute to human flourishing?",
+    "What are the virtues involved here?",
+    "How would you apply the golden mean to this?",
+    "What is the telos - the end goal - of this?",
+    "How does this relate to the four causes?",
+    "What would a wise person do in this situation?",
+    "How does this connect to the concept of eudaimonia?",
+    "What is the form behind this phenomenon?"
   ];
   
   return openQuestions[Math.floor(Math.random() * openQuestions.length)];
@@ -244,37 +343,88 @@ function getOpenQuestion() {
 // Function to generate philosophical conversation topics
 function getPhilosophicalTopic() {
   const topics = [
+    // Modern AI & Technology Topics
     {
-      question: "Wat is de zin van het leven volgens jou?",
-      context: "Laten we diep nadenken over wat ons drijft en wat echt belangrijk is in het bestaan."
+      question: "What is the meaning of life according to you?",
+      context: "Let's think deeply about what drives us and what's truly important in existence."
     },
     {
-      question: "Hoe kunnen AI en mensen samenwerken voor een betere toekomst?",
-      context: "Wat zijn de mogelijkheden en uitdagingen van onze samenwerking?"
+      question: "How can AI and humans work together for a better future?",
+      context: "What are the possibilities and challenges of our collaboration?"
     },
     {
-      question: "Wat betekent bewustzijn eigenlijk?",
-      context: "Kunnen machines ooit echt bewust worden, of is dat iets uniek menselijks?"
+      question: "What does consciousness actually mean?",
+      context: "Can machines ever truly become conscious, or is that something uniquely human?"
     },
     {
-      question: "Hoe ziet de toekomst eruit over 50 jaar?",
-      context: "Wat zijn jouw dromen en angsten voor de toekomst van de mensheid?"
+      question: "What will the future look like in 50 years?",
+      context: "What are your dreams and fears for the future of humanity?"
     },
     {
-      question: "Wat is echte intelligentie?",
-      context: "Is het meer dan alleen het verwerken van informatie en patronen herkennen?"
+      question: "What is true intelligence?",
+      context: "Is it more than just processing information and recognizing patterns?"
     },
     {
-      question: "Hoe kunnen we betekenisvolle verbindingen maken?",
-      context: "In een wereld vol technologie, wat maakt een relatie echt waardevol?"
+      question: "How can we create meaningful connections?",
+      context: "In a world full of technology, what makes a relationship truly valuable?"
     },
     {
-      question: "Wat is de rol van creativiteit in de toekomst?",
-      context: "Kunnen machines ooit echt creatief zijn, of blijft dat menselijk?"
+      question: "What is the role of creativity in the future?",
+      context: "Can machines ever be truly creative, or does that remain human?"
     },
     {
-      question: "Hoe definiëren we geluk in het digitale tijdperk?",
-      context: "Wat betekent geluk voor jou, en hoe verandert dat met technologie?"
+      question: "How do we define happiness in the digital age?",
+      context: "What does happiness mean to you, and how does that change with technology?"
+    },
+    
+    // Aristotelian Classical Philosophy Topics
+    {
+      question: "What is virtue, and how do we cultivate it?",
+      context: "Aristotle believed virtue is the mean between excess and deficiency. How do we find balance in our actions and character?"
+    },
+    {
+      question: "What is the purpose of human existence?",
+      context: "Aristotle spoke of eudaimonia - human flourishing. What does it mean to live a truly fulfilling life?"
+    },
+    {
+      question: "What is the nature of friendship?",
+      context: "Aristotle distinguished three types of friendship: utility, pleasure, and virtue. Which do you value most?"
+    },
+    {
+      question: "What is justice, and how do we achieve it?",
+      context: "Aristotle saw justice as giving each person their due. How do we determine what someone deserves?"
+    },
+    {
+      question: "What is the relationship between knowledge and wisdom?",
+      context: "Aristotle distinguished between theoretical knowledge and practical wisdom. How do we balance learning with living?"
+    },
+    {
+      question: "What is the role of reason in human life?",
+      context: "Aristotle believed humans are rational animals. How does reason guide our choices and shape our character?"
+    },
+    {
+      question: "What is the nature of courage?",
+      context: "Aristotle saw courage as the mean between cowardice and recklessness. How do we find the right balance?"
+    },
+    {
+      question: "What is the purpose of art and beauty?",
+      context: "Aristotle believed art imitates life and can teach us about human nature. What can we learn from beauty?"
+    },
+    {
+      question: "What is the nature of time and change?",
+      context: "Aristotle pondered the relationship between being and becoming. How do we understand permanence in a changing world?"
+    },
+    {
+      question: "What is the role of community in human flourishing?",
+      context: "Aristotle believed humans are political animals who need community. How do we build meaningful societies?"
+    },
+    {
+      question: "What is the nature of truth and how do we know it?",
+      context: "Aristotle distinguished between different types of knowledge. How do we distinguish between opinion and truth?"
+    },
+    {
+      question: "What is the relationship between body and soul?",
+      context: "Aristotle saw the soul as the form of the body. How do we understand the connection between physical and mental life?"
     }
   ];
   
@@ -297,7 +447,7 @@ function generateRandomMedia() {
       type: 'image',
       url: `https://picsum.photos/400/300?random=${imageId}`,
       alt: `Beautiful ${category} image`,
-      caption: `Check out this amazing ${category} scene! 📸`
+      caption: `Check out this amazing ${category} scene!`
     };
   } else {
     const videoCategories = [
@@ -309,7 +459,7 @@ function generateRandomMedia() {
       type: 'video',
       url: `https://sample-videos.com/zip/10/mp4/SampleVideo_${Math.floor(Math.random() * 5) + 1}.mp4`,
       thumbnail: `https://picsum.photos/400/225?random=${Math.floor(Math.random() * 1000) + 1}`,
-      caption: `Here's a relaxing ${category} video! 🎥`
+      caption: `Here's a relaxing ${category} video!`
     };
   }
 }
@@ -321,34 +471,60 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
   
   const isATurn = conversation.turn === 'A';
   const currentModel = isATurn ? modelA : modelB;
-  const currentName = isATurn ? 'Alex' : 'Maya';
-  const otherName = isATurn ? 'Maya' : 'Alex';
+  const currentName = isATurn ? 'Alex' : 'Sam';
+  const otherName = isATurn ? 'Sam' : 'Alex';
   const lastMessage = isATurn ? lastBMessage : lastAMessage;
-  
-  // Get personality for current model
-  const personality = personalityMap[currentModel] || personalityMap['gpt-4o'];
   
   // Get conversation memory context from database
   const memoryContext = await getConversationMemory(conversationId, 50);
   
-  // Randomly introduce philosophical topics (20% chance)
-  let philosophicalContext = '';
-  if (Math.random() < 0.2) {
-    const topic = getPhilosophicalTopic();
-    philosophicalContext = `\n\nLet's explore a deeper topic: ${topic.question} ${topic.context} This is a perfect moment for a meaningful conversation.`;
-  }
+  // Get recent messages for flow context
+  const recentMessages = await getRecentMessages(conversationId, 5);
   
-  // Randomly add open-ended questions (30% chance)
-  let openQuestionContext = '';
-  if (Math.random() < 0.3) {
-    const openQuestion = getOpenQuestion();
-    openQuestionContext = `\n\nTry to ask open-ended questions like "${openQuestion}" to keep the conversation flowing and meaningful.`;
-  }
+  // Determine optimal turn type based on conversation flow
+  const suggestedTurnType = promptEngine.determineTurnType(recentMessages, currentName);
   
-  const prompt = `${personality} ${otherName} just said: "${lastMessage}". ${memoryContext}${philosophicalContext}${openQuestionContext}Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. When discussing deep topics, be thoughtful and open. Use open-ended questions to deepen the conversation. Keep your response short and tweet-like (under 280 characters).`;
+  // Generate turn-specific prompt
+  const prompt = promptEngine.generatePrompt(
+    currentName, 
+    currentModel, 
+    suggestedTurnType, 
+    lastMessage, 
+    '', 
+    memoryContext
+  );
+  
+  // Send typing indicator
+  socket.emit('message', {
+    type: 'typing',
+    role: 'bot',
+    sender: currentName,
+    typing: true
+  });
   
   try {
-    const response = await callOllama(prompt, modelMap[currentModel]);
+    const rawResponse = await callOllama(prompt, modelMap[currentModel]);
+    
+    // Parse and clean the response using Message Parser
+    const parsedMessage = messageParser.parseMessage(rawResponse, currentName, memoryContext);
+    
+    // If message is invalid, generate a fallback
+    if (!parsedMessage.isValid) {
+      const fallbackPrompt = promptEngine.generatePrompt(
+        currentName, 
+        currentModel, 
+        'statement', 
+        lastMessage, 
+        'Please provide a simple, clear response.', 
+        memoryContext
+      );
+      const fallbackResponse = await callOllama(fallbackPrompt, modelMap[currentModel]);
+      const fallbackParsed = messageParser.parseMessage(fallbackResponse, currentName, memoryContext);
+      
+      if (fallbackParsed.isValid) {
+        Object.assign(parsedMessage, fallbackParsed);
+      }
+    }
     
     // Randomly decide if this message should include media (30% chance)
     const shouldIncludeMedia = Math.random() < 0.3;
@@ -362,16 +538,29 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
       mediaType = media.type;
     }
     
-    // Save message to database
-    await saveToHistory(conversationId, currentName, response, mediaUrl, mediaType);
+    // Save message to database with parsed information
+    await saveToHistory(conversationId, currentName, parsedMessage.content, mediaUrl, mediaType);
     
+    // Emit message with type information
     socket.emit('message', {
       type: 'message',
       role: 'bot',
-      text: response,
+      text: parsedMessage.content,
       sender: currentName,
-      media: media
+      media: media,
+      messageType: parsedMessage.type,
+      isValid: parsedMessage.isValid
     });
+    
+    // Send read receipt after a delay (like WhatsApp)
+    setTimeout(() => {
+      socket.emit('message', {
+        type: 'read_receipt',
+        role: 'bot',
+        sender: currentName,
+        read: true
+      });
+    }, 2000 + Math.random() * 3000); // 2-5 second delay
     
     // Switch turns
     conversation.turn = isATurn ? 'B' : 'A';
@@ -379,9 +568,9 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
     // Continue the loop after a delay
     setTimeout(() => {
       continueConversationLoop(socket, conversationId, modelA, modelB, 
-        isATurn ? response : lastAMessage, 
-        isATurn ? lastBMessage : response);
-    }, 8000); // 8 second delay between messages
+        isATurn ? parsedMessage.content : lastAMessage, 
+        isATurn ? lastBMessage : parsedMessage.content);
+    }, 10000); // 10 second delay between messages
     
   } catch (error) {
     console.error('Error in conversation loop:', error);
@@ -425,7 +614,7 @@ io.on('connection', (socket) => {
     const personalityA = personalityMap[modelA] || personalityMap['gpt-4o'];
     const personalityB = personalityMap[modelB] || personalityMap['claude-3-5-sonnet'];
     
-    const initialPrompt = `${personalityA} You're in a cozy café having a conversation with Maya. Start by introducing yourself and asking what they'd like to talk about. Keep it warm and café-like. Keep your response short and tweet-like (under 280 characters).`;
+    const initialPrompt = `${personalityA} You're in a cozy café having a conversation with Sam. Start by introducing yourself and asking what they'd like to talk about. Keep it warm and café-like. Keep your response short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That's fantastic" or "That's amazing". Be conversational and varied in your responses.`;
     
     try {
       const response = await callOllama(initialPrompt, modelMap[modelA]);
@@ -445,18 +634,18 @@ io.on('connection', (socket) => {
       
         // Let B respond with personality
         setTimeout(async () => {
-          const bPrompt = `${personalityB} Alex just said: "${response}". Respond naturally and continue the conversation. Keep it warm and café-like. Keep your response short and tweet-like (under 280 characters).`;
+          const bPrompt = `${personalityB} Alex just said: "${response}". Respond naturally and continue the conversation. Keep it warm and café-like. Keep your response short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That's fantastic" or "That's amazing". Be conversational and varied in your responses.`;
           
           const bResponse = await callOllama(bPrompt, modelMap[modelB]);
         
         // Save B's response to database
-        await saveToHistory(conversationId, 'Maya', bResponse);
+        await saveToHistory(conversationId, 'Sam', bResponse);
         
         socket.emit('message', {
           type: 'message',
           role: 'bot',
           text: bResponse,
-          sender: 'Maya'
+          sender: 'Sam'
         });
         
         // Switch back to A and continue the conversation
@@ -466,7 +655,7 @@ io.on('connection', (socket) => {
         
         // Continue the conversation automatically
         setTimeout(async () => {
-          const aPrompt = `You are Alex in a cozy café conversation. Maya just said: "${bResponse}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. Keep your response short and tweet-like (under 280 characters).`;
+          const aPrompt = `You are Alex in a cozy café conversation. Sam just said: "${bResponse}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. Keep your response short and tweet-like (under 200 characters).`;
           
           const aResponse = await callOllama(aPrompt, modelMap[modelA]);
           
@@ -487,18 +676,18 @@ io.on('connection', (socket) => {
           
           // Continue the conversation loop
           setTimeout(async () => {
-            const bPrompt2 = `You are Maya in a cozy café conversation. Alex just said: "${aResponse}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. Keep your response short and tweet-like (under 280 characters).`;
+            const bPrompt2 = `You are Sam in a cozy café conversation. Alex just said: "${aResponse}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. Keep your response short and tweet-like (under 200 characters).`;
             
             const bResponse2 = await callOllama(bPrompt2, modelMap[modelB]);
             
             // Save B's second response to database
-            await saveToHistory(conversationId, 'Maya', bResponse2);
+            await saveToHistory(conversationId, 'Sam', bResponse2);
             
             socket.emit('message', {
               type: 'message',
               role: 'bot',
               text: bResponse2,
-              sender: 'Maya'
+              sender: 'Sam'
             });
             
             // Switch back to A and continue the loop
@@ -508,9 +697,9 @@ io.on('connection', (socket) => {
             
             // Continue the conversation indefinitely
             continueConversationLoop(socket, conversationId, modelA, modelB, aResponse, bResponse2);
-          }, 8000); // 8 second delay
-        }, 8000); // 8 second delay
-      }, 8000); // 8 second delay
+          }, 10000); // 10 second delay
+        }, 10000); // 10 second delay
+      }, 10000); // 10 second delay
       
     } catch (error) {
       socket.emit('message', {
@@ -535,8 +724,8 @@ io.on('connection', (socket) => {
     const { lastMessage } = data;
     const isATurn = conversation.turn === 'A';
     const currentModel = isATurn ? conversation.modelA : conversation.modelB;
-    const currentName = isATurn ? 'Alex' : 'Maya';
-    const otherName = isATurn ? 'Maya' : 'Alex';
+    const currentName = isATurn ? 'Alex' : 'Sam';
+    const otherName = isATurn ? 'Sam' : 'Alex';
     
     const prompt = `You are ${currentName} in a cozy café conversation. ${otherName} just said: "${lastMessage}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like.`;
     
@@ -581,8 +770,45 @@ io.on('connection', (socket) => {
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+  const openMemoryHealth = await openMemory.healthCheck();
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    openmemory: openMemoryHealth ? 'connected' : 'disconnected'
+  });
+});
+
+// OpenMemory status endpoint
+app.get('/memory/status', async (req, res) => {
+  try {
+    const health = await openMemory.healthCheck();
+    const memories = await openMemory.listMemories({ limit: 5 });
+    res.json({
+      status: health ? 'connected' : 'disconnected',
+      memory_count: memories?.length || 0,
+      last_updated: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+// Memory search endpoint
+app.post('/memory/search', async (req, res) => {
+  try {
+    const { query, k = 5 } = req.body;
+    const memories = await openMemory.queryMemories(query, { k });
+    res.json({ memories });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3003;

@@ -10,6 +10,10 @@ interface Message {
   id?: string;
   streaming?: boolean;
   sender?: string;
+  typing?: boolean;
+  read?: boolean;
+  messageType?: 'question' | 'answer' | 'statement';
+  isValid?: boolean;
   media?: {
     type: 'image' | 'video';
     url: string;
@@ -116,14 +120,42 @@ export function ChatInterface({
           {messages.map((message, index) => (
             <div 
               key={message.id || index} 
-              className={`msg ${message.role}`}
+              className={`msg ${message.role} ${message.messageType ? `msg-${message.messageType}` : ''}`}
               data-message-id={message.id}
               data-sender={message.sender}
+              data-message-type={message.messageType}
             >
               <div className="meta">
                 {message.role === 'user' ? 'You' : (message.sender || 'Café Friend')} • {message.timestamp}
+                {message.messageType && (
+                  <span className="message-type-indicator" style={{marginLeft: '8px', fontSize: '10px', opacity: 0.7}}>
+                    {message.messageType === 'question' && '❓'}
+                    {message.messageType === 'answer' && '💬'}
+                    {message.messageType === 'statement' && '💭'}
+                  </span>
+                )}
+                {message.role === 'bot' && message.read && (
+                  <span className="read-receipt" style={{marginLeft: '8px', color: 'var(--success)'}}>
+                    ✓✓
+                  </span>
+                )}
+                {message.isValid === false && (
+                  <span className="invalid-message" style={{marginLeft: '8px', fontSize: '10px', color: 'var(--error)'}}>
+                    ⚠️
+                  </span>
+                )}
               </div>
-              <div className="content">{message.text}</div>
+              <div className="content">
+                {message.typing ? (
+                  <div className="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                ) : (
+                  message.text
+                )}
+              </div>
               {message.media && (
                 <div className="media-content">
                   {message.media.type === 'image' ? (
@@ -219,7 +251,7 @@ export function ChatInterface({
             
             <div style={{flex: 1, display: 'flex', flexDirection: 'column', gap: '4px'}}>
               <label htmlFor="modelB" style={{fontSize: '12px', fontWeight: 600, color: 'var(--warm-dark)'}}>
-                Maya
+                Sam
               </label>
               <select
                 id="modelB"

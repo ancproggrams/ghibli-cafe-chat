@@ -1,0 +1,90 @@
+services:
+  # OpenMemory Mock Service
+  openmemory:
+    build:
+      context: .
+      dockerfile: Dockerfile.openmemory
+    container_name: ghibli-openmemory
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL with pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ghibli-postgres
+    environment:
+      - POSTGRES_DB=openmemory
+      - POSTGRES_USER=openmemory
+      - POSTGRES_PASSWORD=openmemory
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openmemory -d openmemory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Ollama for embeddings and LLM
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ghibli-ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Backend Service (existing)
+  backend:
+    build: ./backend
+    container_name: ghibli-backend
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=production
+      - OPENMEMORY_URL=http://localhost:8080
+      - DATABASE_URL=postgresql://openmemory:openmemory@postgres:5432/openmemory
+      - OLLAMA_URL=http://localhost:11434
+    depends_on:
+      - postgres
+      - ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend Service (existing)
+  frontend:
+    build: .
+    container_name: ghibli-frontend
+    ports:
+      - "3002:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:3003
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  ollama_data:

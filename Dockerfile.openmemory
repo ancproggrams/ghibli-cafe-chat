@@ -1,0 +1,177 @@
+FROM node:18-alpine
+
+# Install dependencies
+RUN apk add --no-cache curl
+
+WORKDIR /app
+
+# Create a simple OpenMemory mock service
+RUN npm init -y && \
+    npm install express cors axios
+
+# Create OpenMemory mock service
+COPY <<EOF server.js
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Mock OpenMemory MCP server
+app.post('/mcp', (req, res) => {
+  const { method, params } = req.body;
+  
+  if (method === 'tools/call') {
+    const { name, arguments: args } = params;
+    
+    switch (name) {
+      case 'openmemory.store':
+        res.json({
+          jsonrpc: '2.0',
+          id: req.body.id,
+          result: {
+            memory_id: 'mem_' + Date.now(),
+            status: 'stored',
+            content: args.content,
+            metadata: args.metadata
+          }
+        });
+        break;
+        
+      case 'openmemory.query':
+        res.json({
+          jsonrpc: '2.0',
+          id: req.body.id,
+          result: {
+            memories: [
+              {
+                memory_id: 'mem_1',
+                content: 'Previous conversation about AI and technology',
+                metadata: { sender: 'Alex', timestamp: new Date().toISOString() },
+                similarity: 0.85
+              },
+              {
+                memory_id: 'mem_2', 
+                content: 'Discussion about philosophy and meaning of life',
+                metadata: { sender: 'Sam', timestamp: new Date().toISOString() },
+                similarity: 0.72
+              }
+            ]
+          }
+        });
+        break;
+        
+      case 'openmemory.reinforce':
+        res.json({
+          jsonrpc: '2.0',
+          id: req.body.id,
+          result: {
+            memory_id: args.memory_id,
+            importance: args.importance,
+            status: 'reinforced'
+          }
+        });
+        break;
+        
+      case 'openmemory.list':
+        res.json({
+          jsonrpc: '2.0',
+          id: req.body.id,
+          result: {
+            memories: [
+              {
+                memory_id: 'mem_1',
+                content: 'Sample conversation memory',
+                metadata: { sender: 'Alex', timestamp: new Date().toISOString() }
+              }
+            ],
+            total: 1
+          }
+        });
+        break;
+        
+      case 'openmemory.get':
+        res.json({
+          jsonrpc: '2.0',
+          id: req.body.id,
+          result: {
+            memory_id: args.memory_id,
+            content: 'Retrieved memory content',
+            metadata: { sender: 'Alex', timestamp: new Date().toISOString() }
+          }
+        });
+        break;
+        
+      default:
+        res.json({
+          jsonrpc: '2.0',
+          id: req.body.id,
+          error: {
+            code: -32601,
+            message: 'Method not found'
+          }
+        });
+    }
+  } else {
+    res.json({
+      jsonrpc: '2.0',
+      id: req.body.id,
+      error: {
+        code: -32600,
+        message: 'Invalid Request'
+      }
+    });
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    service: 'OpenMemory Mock',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
+  });
+});
+
+// MCP tools list
+app.get('/tools', (req, res) => {
+  res.json({
+    tools: [
+      {
+        name: 'openmemory.store',
+        description: 'Store a memory with content and metadata'
+      },
+      {
+        name: 'openmemory.query', 
+        description: 'Query memories by semantic similarity'
+      },
+      {
+        name: 'openmemory.reinforce',
+        description: 'Reinforce a memory with importance score'
+      },
+      {
+        name: 'openmemory.list',
+        description: 'List memories with pagination'
+      },
+      {
+        name: 'openmemory.get',
+        description: 'Get a specific memory by ID'
+      }
+    ]
+  });
+});
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🧠 OpenMemory Mock Service running on port ${PORT}`);
+  console.log(`🔗 MCP endpoint: http://localhost:${PORT}/mcp`);
+  console.log(`❤️  Health check: http://localhost:${PORT}/health`);
+});
+EOF
+
+EXPOSE 8080
+
+CMD ["node", "server.js"]

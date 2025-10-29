@@ -237,6 +237,88 @@ body {
   animation: pulse 2.4s ease-in-out infinite;
 }
 
+/* Typing indicator */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  background: rgba(249, 243, 235, 0.8);
+  border-radius: 18px;
+  border: 1px solid rgba(193, 122, 74, 0.3);
+  width: fit-content;
+  margin: 4px 0;
+}
+
+/* Typing indicator for Sam (right aligned) */
+.msg.bot[data-sender="Sam"] .typing-indicator {
+  margin-left: auto;
+  margin-right: 0;
+  background: rgba(240, 248, 232, 0.8);
+  border-color: rgba(125, 155, 111, 0.3);
+}
+
+/* Typing indicator for Alex (left aligned) */
+.msg.bot[data-sender="Alex"] .typing-indicator {
+  margin-right: auto;
+  margin-left: 0;
+  background: rgba(232, 244, 253, 0.8);
+  border-color: rgba(74, 144, 226, 0.3);
+}
+
+.typing-indicator span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warm-accent);
+  animation: typing 1.4s infinite ease-in-out;
+}
+
+.typing-indicator span:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+.typing-indicator span:nth-child(3) {
+  animation-delay: 0s;
+}
+
+@keyframes typing {
+  0%, 80%, 100% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Read receipt */
+.read-receipt {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.8;
+  transition: opacity 0.3s ease;
+}
+
+.read-receipt:hover {
+  opacity: 1;
+}
+
+/* Read receipt for Sam (right aligned) */
+.msg.bot[data-sender="Sam"] .read-receipt {
+  color: #7d9b6f;
+}
+
+/* Read receipt for Alex (left aligned) */
+.msg.bot[data-sender="Alex"] .read-receipt {
+  color: #4a90e2;
+}
+
 /* Waveform visualizer */
 .wave-container {
   display: flex; 
@@ -358,8 +440,8 @@ body {
   border-radius: 18px 18px 18px 4px; /* Rounded corners except bottom-left */
 }
 
-/* Maya (right aligned) */
-.msg.bot[data-sender="Maya"] {
+/* Sam (right aligned) */
+.msg.bot[data-sender="Sam"] {
   margin-left: auto;
   margin-right: 0;
   background: linear-gradient(135deg, #f0f8e8 0%, #e1f2d1 100%);
@@ -395,7 +477,7 @@ body {
   box-shadow: 0 0 6px rgba(74, 144, 226, 0.6);
 }
 
-.msg.bot[data-sender="Maya"] .meta::before {
+.msg.bot[data-sender="Sam"] .meta::before {
   background: #7d9b6f;
   box-shadow: 0 0 6px rgba(125, 155, 111, 0.6);
 }
@@ -584,4 +666,65 @@ body.time-night .time-btn.active {
 
 body.time-evening .time-btn.active {
   box-shadow: 0 2px 8px rgba(217, 136, 68, 0.4);
+}
+
+/* Message Type Styling */
+.msg-question {
+  border-left: 3px solid #ff6b6b;
+  background: linear-gradient(135deg, #fff5f5 0%, #ffe8e8 100%);
+}
+
+.msg-answer {
+  border-left: 3px solid #4ecdc4;
+  background: linear-gradient(135deg, #f0fffe 0%, #e0f7f5 100%);
+}
+
+.msg-statement {
+  border-left: 3px solid #45b7d1;
+  background: linear-gradient(135deg, #f0f8ff 0%, #e6f3ff 100%);
+}
+
+/* Message type indicators */
+.message-type-indicator {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-left: 8px;
+}
+
+/* Invalid message indicator */
+.invalid-message {
+  font-size: 10px;
+  color: var(--error);
+  margin-left: 8px;
+}
+
+/* Enhanced message styling for different types */
+.msg.bot[data-sender="Alex"].msg-question {
+  background: linear-gradient(135deg, #fff5f5 0%, #ffe8e8 100%);
+  border-color: #ff6b6baa;
+}
+
+.msg.bot[data-sender="Sam"].msg-question {
+  background: linear-gradient(135deg, #fff5f5 0%, #ffe8e8 100%);
+  border-color: #ff6b6baa;
+}
+
+.msg.bot[data-sender="Alex"].msg-answer {
+  background: linear-gradient(135deg, #f0fffe 0%, #e0f7f5 100%);
+  border-color: #4ecdc4aa;
+}
+
+.msg.bot[data-sender="Sam"].msg-answer {
+  background: linear-gradient(135deg, #f0fffe 0%, #e0f7f5 100%);
+  border-color: #4ecdc4aa;
+}
+
+.msg.bot[data-sender="Alex"].msg-statement {
+  background: linear-gradient(135deg, #f0f8ff 0%, #e6f3ff 100%);
+  border-color: #45b7d1aa;
+}
+
+.msg.bot[data-sender="Sam"].msg-statement {
+  background: linear-gradient(135deg, #f0f8ff 0%, #e6f3ff 100%);
+  border-color: #45b7d1aa;
 }

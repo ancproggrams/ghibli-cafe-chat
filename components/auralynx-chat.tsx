@@ -21,7 +21,7 @@ export default function AuralynxChat() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'bot' as const,
-      text: 'Welcome to the Ghibli Café! 🍰☕ Select two LLM models (Gaijin A and Gaijin B) below and click "Start Conversation" to watch them chat with each other.',
+      text: 'Welcome to the Ghibli Café! 🍰☕ Select two LLM models (Alex and Sam) below and click "Start Conversation" to watch them chat with each other.',
       timestamp: '--:--',
       id: 'initial'
     }
@@ -96,7 +96,15 @@ export default function AuralynxChat() {
 
       switch (data.type) {
         case 'message':
-          addMessage(data.role || 'bot', data.text || '', data.sender);
+          // Remove typing indicator for this sender before adding the message
+          setMessages(prev => prev.filter(msg => !(msg.id?.startsWith(`typing-${data.sender}-`))));
+          addMessage(data.role || 'bot', data.text || '', data.sender, data.media);
+          break;
+        case 'typing':
+          addTypingIndicator(data.sender);
+          break;
+        case 'read_receipt':
+          updateReadReceipt(data.sender);
           break;
         case 'error':
           addMessage('bot', data.text || 'An error occurred');
@@ -104,7 +112,7 @@ export default function AuralynxChat() {
         default:
           // Handle any other message types
           if (data.text) {
-            addMessage(data.role || 'bot', data.text, data.sender);
+            addMessage(data.role || 'bot', data.text, data.sender, data.media);
           }
       }
     });
@@ -116,13 +124,42 @@ export default function AuralynxChat() {
     }
   }, [connected]);
 
-  const addMessage = useCallback((role: 'user' | 'bot', text: string, sender?: string) => {
+  const addMessage = useCallback((role: 'user' | 'bot', text: string, sender?: string, media?: any) => {
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
     const minutes = now.getMinutes().toString().padStart(2, '0');
     const timestamp = `${hours}:${minutes}`;
     const messageId = Date.now().toString() + Math.random().toString(36);
-    setMessages(prev => [...prev, { role, text, timestamp, id: messageId, sender }]);
+    setMessages(prev => [...prev, { role, text, timestamp, id: messageId, sender, media }]);
+  }, []);
+
+  const addTypingIndicator = useCallback((sender: string) => {
+    const now = new Date();
+    const hours = now.getHours().toString().padStart(2, '0');
+    const minutes = now.getMinutes().toString().padStart(2, '0');
+    const timestamp = `${hours}:${minutes}`;
+    const messageId = `typing-${sender}-${Date.now()}`;
+    
+    // Remove any existing typing indicator for this sender
+    setMessages(prev => prev.filter(msg => !(msg.id?.startsWith(`typing-${sender}-`))));
+    
+    // Add new typing indicator
+    setMessages(prev => [...prev, { 
+      role: 'bot', 
+      text: '', 
+      timestamp, 
+      id: messageId, 
+      sender, 
+      typing: true 
+    }]);
+  }, []);
+
+  const updateReadReceipt = useCallback((sender: string) => {
+    setMessages(prev => prev.map(msg => 
+      msg.sender === sender && msg.role === 'bot' 
+        ? { ...msg, read: true }
+        : msg
+    ));
   }, []);
 
   const addStreamingMessage = useCallback(() => {
@@ -150,7 +187,7 @@ export default function AuralynxChat() {
     }
 
     // Send the selected models to start the conversation
-    const message = `Starting conversation between ${modelA} (Gaijin A) and ${modelB} (Gaijin B)`;
+    const message = `Starting conversation between ${modelA} (Alex) and ${modelB} (Sam)`;
     addMessage('user', message);
     
     // Send to backend
