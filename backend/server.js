@@ -139,15 +139,40 @@ async function callOllama(prompt, model = 'llama3.2', personality = null) {
       fullPrompt = `${personality}\n\n${prompt}`;
     }
     
+    // Add timeout and better error handling
     const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
       model: model,
       prompt: fullPrompt,
-      stream: false
+      stream: false,
+      options: {
+        temperature: 0.7,
+        top_p: 0.9,
+        max_tokens: 150
+      }
+    }, {
+      timeout: 30000, // 30 second timeout
+      headers: {
+        'Content-Type': 'application/json'
+      }
     });
-    return response.data.response;
+    
+    if (response.data && response.data.response) {
+      return response.data.response;
+    } else {
+      throw new Error('Invalid response format from Ollama');
+    }
   } catch (error) {
     console.error('Ollama API error:', error.message);
-    return 'Sorry, I encountered an error while generating a response.';
+    console.error('Error details:', error.response?.data || 'No response data');
+    
+    // Generate a fallback response based on personality
+    if (personality && personality.includes('Sam')) {
+      return 'I need a moment to think about this. The conversation is getting quite deep.';
+    } else if (personality && personality.includes('Alex')) {
+      return 'Let me try a different approach to this topic.';
+    } else {
+      return 'I\'m having some technical difficulties, but I\'d love to continue our conversation.';
+    }
   }
 }
 
@@ -780,12 +805,32 @@ io.on('connection', (socket) => {
 
 // Health check endpoint
 app.get('/health', async (req, res) => {
-  const openMemoryHealth = await openMemory.healthCheck();
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    openmemory: openMemoryHealth ? 'connected' : 'disconnected'
-  });
+  try {
+    // Check OpenMemory connection
+    const openMemoryHealth = await openMemory.healthCheck();
+    
+    // Check Ollama connection
+    let ollamaStatus = 'disconnected';
+    try {
+      const ollamaResponse = await axios.get(`${OLLAMA_BASE_URL}/api/tags`, { timeout: 5000 });
+      ollamaStatus = ollamaResponse.status === 200 ? 'connected' : 'error';
+    } catch (error) {
+      console.log('Ollama health check failed:', error.message);
+    }
+    
+    res.json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      openmemory: openMemoryHealth ? 'connected' : 'disconnected',
+      ollama: ollamaStatus
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'ERROR',
+      timestamp: new Date().toISOString(),
+      error: error.message
+    });
+  }
 });
 
 // OpenMemory status endpoint
