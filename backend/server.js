@@ -149,31 +149,104 @@ async function checkModelHealth(model) {
   }
 }
 
-// Function to call Ollama API
+// Model fallback configuration
+const MODEL_FALLBACKS = {
+  'gpt-oss:20b': 'llama3.2:latest',
+  'llama3.2:latest': 'phi3:mini',
+  'phi3:mini': 'phi3:mini' // Last resort
+};
+
+// Track model health status
+const modelHealth = new Map();
+
+// Function to check if a model is healthy
+async function checkModelHealth(model) {
+  try {
+    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
+      model: model,
+      prompt: 'test',
+      stream: false,
+      options: {
+        num_predict: 1,
+        temperature: 0.1
+      }
+    }, {
+      timeout: 10000,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    return response.status === 200 && response.data?.response;
+  } catch (error) {
+    console.log(`Model ${model} health check failed:`, error.message);
+    return false;
+  }
+}
+
+// Function to get a working model with fallback
+async function getWorkingModel(requestedModel, personality) {
+  // Check if we have a cached health status
+  if (modelHealth.has(requestedModel)) {
+    const isHealthy = modelHealth.get(requestedModel);
+    if (isHealthy) {
+      return requestedModel;
+    }
+  }
+  
+  // Test the requested model
+  const isHealthy = await checkModelHealth(requestedModel);
+  modelHealth.set(requestedModel, isHealthy);
+  
+  if (isHealthy) {
+    return requestedModel;
+  }
+  
+  // Try fallback models
+  let fallbackModel = MODEL_FALLBACKS[requestedModel];
+  while (fallbackModel && fallbackModel !== requestedModel) {
+    console.log(`Trying fallback model: ${fallbackModel}`);
+    const fallbackHealthy = await checkModelHealth(fallbackModel);
+    modelHealth.set(fallbackModel, fallbackHealthy);
+    
+    if (fallbackHealthy) {
+      console.log(`Using fallback model: ${fallbackModel} instead of ${requestedModel}`);
+      return fallbackModel;
+    }
+    
+    fallbackModel = MODEL_FALLBACKS[fallbackModel];
+  }
+  
+  // Last resort - use phi3:mini
+  console.log(`All models failed, using phi3:mini as last resort`);
+  return 'phi3:mini';
+}
+
+// Function to call Ollama API with automatic fallback
 async function callOllama(prompt, model = 'llama3.2', personality = null) {
   try {
+    // Get a working model with fallback
+    const workingModel = await getWorkingModel(model, personality);
+    
     // Add personality to prompt if provided
     let fullPrompt = prompt;
     if (personality) {
       fullPrompt = `${personality}\n\n${prompt}`;
     }
     
-    // Add timeout and better error handling
-    // Longer timeout for larger models like gpt-oss:20b
-    const timeout = model.includes('gpt-oss') || model.includes('20b') ? 60000 : 15000;
+    // Shorter timeout for better responsiveness
+    const timeout = 20000; // 20 seconds max
     
     const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
-      model: model,
+      model: workingModel,
       prompt: fullPrompt,
       stream: false,
       options: {
         temperature: 0.8,
         top_p: 0.9,
-        num_predict: 200, // Allow up to 200 characters
+        num_predict: 150, // Reduced to 150 characters for better performance
         stop: ['\n\n', 'Human:', 'Assistant:', 'Alex:', 'Sam:']
       }
     }, {
-      timeout: timeout, // Dynamic timeout based on model size
+      timeout: timeout,
       headers: {
         'Content-Type': 'application/json'
       }
@@ -188,26 +261,16 @@ async function callOllama(prompt, model = 'llama3.2', personality = null) {
     console.error('Ollama API error:', error.message);
     console.error('Error details:', error.response?.data || 'No response data');
     
-    // Generate a fallback response based on personality and error type
-    const isResourceError = error.message.includes('model runner has unexpectedly stopped') || 
-                           error.message.includes('resource limitations');
+    // Mark model as unhealthy
+    modelHealth.set(model, false);
     
-    if (isResourceError) {
-      if (personality && personality.includes('Sam')) {
-        return 'I\'m processing some complex thoughts right now. Give me a moment to organize my ideas.';
-      } else if (personality && personality.includes('Alex')) {
-        return 'I need a quick break to think this through properly.';
-      } else {
-        return 'I\'m working through some heavy processing. Let me gather my thoughts.';
-      }
+    // Generate a natural fallback response
+    if (personality && personality.includes('Sam')) {
+      return 'I need a moment to think about this. The conversation is getting quite deep.';
+    } else if (personality && personality.includes('Alex')) {
+      return 'Let me try a different approach to this topic.';
     } else {
-      if (personality && personality.includes('Sam')) {
-        return 'I need a moment to think about this. The conversation is getting quite deep.';
-      } else if (personality && personality.includes('Alex')) {
-        return 'Let me try a different approach to this topic.';
-      } else {
-        return 'I\'m having some technical difficulties, but I\'d love to continue our conversation.';
-      }
+      return 'I\'m having some technical difficulties, but I\'d love to continue our conversation.';
     }
   }
 }
@@ -848,18 +911,29 @@ app.get('/health', async (req, res) => {
     
     // Check Ollama connection
     let ollamaStatus = 'disconnected';
+    let availableModels = [];
     try {
       const ollamaResponse = await axios.get(`${OLLAMA_BASE_URL}/api/tags`, { timeout: 5000 });
       ollamaStatus = ollamaResponse.status === 200 ? 'connected' : 'error';
+      availableModels = ollamaResponse.data?.models?.map(m => m.name) || [];
     } catch (error) {
       console.log('Ollama health check failed:', error.message);
+    }
+    
+    // Check model health status
+    const modelStatus = {};
+    for (const [model, isHealthy] of modelHealth.entries()) {
+      modelStatus[model] = isHealthy ? 'healthy' : 'unhealthy';
     }
     
     res.json({ 
       status: 'OK', 
       timestamp: new Date().toISOString(),
       openmemory: openMemoryHealth ? 'connected' : 'disconnected',
-      ollama: ollamaStatus
+      ollama: ollamaStatus,
+      available_models: availableModels,
+      model_health: modelStatus,
+      fallback_config: MODEL_FALLBACKS
     });
   } catch (error) {
     res.status(500).json({
