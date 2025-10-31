@@ -9,13 +9,18 @@ const sqlite3 = require('sqlite3').verbose();
 const OpenMemoryService = require('./src/OpenMemoryService');
 const MessageParser = require('./src/MessageParser');
 const PromptEngine = require('./src/PromptEngine');
+const CircuitBreaker = require('./src/CircuitBreaker');
+const RecoveryService = require('./src/RecoveryService');
+const ModelHealthService = require('./src/ModelHealthService');
+const CacheService = require('./src/CacheService');
+const OllamaPool = require('./src/OllamaPool');
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "http://localhost:3002",
+    origin: "http://localhost:3000",
     methods: ["GET", "POST"]
   }
 });
@@ -35,15 +40,35 @@ const openMemory = new OpenMemoryService();
 const messageParser = new MessageParser();
 const promptEngine = new PromptEngine();
 
-// Store active conversations
-const conversations = new Map();
+// Initialize stability & performance services
+const circuitBreaker = new CircuitBreaker({
+  failureThreshold: 3,
+  resetTimeout: 30000
+});
 
-// Initialize SQLite database for persistent storage
+// Initialize SQLite database first (needed for RecoveryService)
 const db = new sqlite3.Database('./conversations.db');
 
-// Create tables for conversation storage
+// Initialize recovery service after db is ready
+const recoveryService = new RecoveryService(db);
+const modelHealthService = new ModelHealthService(OLLAMA_BASE_URL, {
+  checkInterval: 60000,
+  checkTimeout: 10000
+});
+
+const cacheService = new CacheService({
+  maxSize: 1000,
+  ttl: 3600000 // 1 hour
+});
+
+const ollamaPool = new OllamaPool(OLLAMA_BASE_URL, {
+  maxConnections: 10,
+  idleTimeout: 300000
+});
+
+// Initialize database tables first
 db.serialize(() => {
-  // Conversations table
+  // Create tables for conversation storage
   db.run(`CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     model_a TEXT,
@@ -68,7 +93,25 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages (conversation_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_conversations_last_activity ON conversations (last_activity)`);
+  
+  // Initialize recovery tables and start health checks after tables are created
+  recoveryService.initializeTables().then(() => {
+    console.log('[RecoveryService] Initialized');
+  }).catch(err => {
+    console.error('[RecoveryService] Initialization error:', err);
+  });
 });
+
+// Start model health checks
+modelHealthService.start();
+
+// Clean expired cache entries every 10 minutes
+setInterval(() => {
+  cacheService.cleanExpired();
+}, 600000);
+
+// Store active conversations
+const conversations = new Map();
 
 // Create public directory if it doesn't exist
 const publicDir = path.join(__dirname, 'public');
@@ -132,23 +175,6 @@ const personalityMap = {
   'gpt-oss:20b': 'You are Sam, an advanced AI assistant with deep knowledge and analytical thinking. You enjoy exploring complex topics and providing thoughtful insights. You speak with wisdom and intellectual curiosity. Always communicate in English. Keep your responses short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That\'s fantastic" or "That\'s amazing". Be conversational and varied in your responses.'
 };
 
-// Function to check if model is available and working
-async function checkModelHealth(model) {
-  try {
-    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
-      model: model,
-      prompt: 'test',
-      stream: false,
-      options: { num_predict: 5 }
-    }, { timeout: 10000 });
-    
-    return response.data && response.data.response;
-  } catch (error) {
-    console.log(`Model ${model} health check failed:`, error.message);
-    return false;
-  }
-}
-
 // Model fallback configuration
 const MODEL_FALLBACKS = {
   'gpt-oss:20b': 'llama3.2:latest',
@@ -156,47 +182,12 @@ const MODEL_FALLBACKS = {
   'phi3:mini': 'phi3:mini' // Last resort
 };
 
-// Track model health status
-const modelHealth = new Map();
+// Note: Model health checking is now handled by ModelHealthService
 
-// Function to check if a model is healthy
-async function checkModelHealth(model) {
-  try {
-    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
-      model: model,
-      prompt: 'test',
-      stream: false,
-      options: {
-        num_predict: 1,
-        temperature: 0.1
-      }
-    }, {
-      timeout: 10000,
-      headers: { 'Content-Type': 'application/json' }
-    });
-    
-    return response.status === 200 && response.data?.response;
-  } catch (error) {
-    console.log(`Model ${model} health check failed:`, error.message);
-    return false;
-  }
-}
-
-// Function to get a working model with fallback
+// Function to get a working model with fallback (using ModelHealthService)
 async function getWorkingModel(requestedModel, personality) {
-  // Check if we have a cached health status
-  if (modelHealth.has(requestedModel)) {
-    const isHealthy = modelHealth.get(requestedModel);
-    if (isHealthy) {
-      return requestedModel;
-    }
-  }
-  
-  // Test the requested model
-  const isHealthy = await checkModelHealth(requestedModel);
-  modelHealth.set(requestedModel, isHealthy);
-  
-  if (isHealthy) {
+  // Check health service first
+  if (modelHealthService.isModelHealthy(requestedModel)) {
     return requestedModel;
   }
   
@@ -204,10 +195,8 @@ async function getWorkingModel(requestedModel, personality) {
   let fallbackModel = MODEL_FALLBACKS[requestedModel];
   while (fallbackModel && fallbackModel !== requestedModel) {
     console.log(`Trying fallback model: ${fallbackModel}`);
-    const fallbackHealthy = await checkModelHealth(fallbackModel);
-    modelHealth.set(fallbackModel, fallbackHealthy);
     
-    if (fallbackHealthy) {
+    if (modelHealthService.isModelHealthy(fallbackModel)) {
       console.log(`Using fallback model: ${fallbackModel} instead of ${requestedModel}`);
       return fallbackModel;
     }
@@ -220,49 +209,81 @@ async function getWorkingModel(requestedModel, personality) {
   return 'phi3:mini';
 }
 
-// Function to call Ollama API with automatic fallback
+// Function to call Ollama API with circuit breaker, caching, and connection pooling
 async function callOllama(prompt, model = 'llama3.2', personality = null) {
+  // Add personality to prompt if provided
+  let fullPrompt = prompt;
+  if (personality) {
+    fullPrompt = `${personality}\n\n${prompt}`;
+  }
+
+  // Check cache first
+  const cachedResponse = cacheService.get(fullPrompt, model);
+  if (cachedResponse) {
+    console.log('[CacheService] Cache hit for model:', model);
+    return cachedResponse;
+  }
+
+  // Get a working model with health check
+  const workingModel = modelHealthService.isModelHealthy(model) 
+    ? model 
+    : await getWorkingModel(model, personality);
+
+  // Execute with circuit breaker protection
   try {
-    // Get a working model with fallback
-    const workingModel = await getWorkingModel(model, personality);
-    
-    // Add personality to prompt if provided
-    let fullPrompt = prompt;
-    if (personality) {
-      fullPrompt = `${personality}\n\n${prompt}`;
-    }
-    
-    // Shorter timeout for better responsiveness
-    const timeout = 20000; // 20 seconds max
-    
-    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
-      model: workingModel,
-      prompt: fullPrompt,
-      stream: false,
-      options: {
-        temperature: 0.8,
-        top_p: 0.9,
-        num_predict: 150, // Reduced to 150 characters for better performance
-        stop: ['\n\n', 'Human:', 'Assistant:', 'Alex:', 'Sam:']
+    const response = await circuitBreaker.execute(
+      async () => {
+        // Use connection pool for request
+        const response = await ollamaPool.request({
+          method: 'POST',
+          url: '/api/generate',
+          data: {
+            model: workingModel,
+            prompt: fullPrompt,
+            stream: false,
+            options: {
+              temperature: 0.8,
+              top_p: 0.9,
+              num_predict: 150,
+              stop: ['\n\n', 'Human:', 'Assistant:', 'Alex:', 'Sam:']
+            }
+          },
+          timeout: 20000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (response.data && response.data.response) {
+          // Cache successful response
+          cacheService.set(fullPrompt, model, response.data.response);
+          return response.data.response;
+        } else {
+          throw new Error('Invalid response format from Ollama');
+        }
+      },
+      // Fallback function
+      () => {
+        console.log('[CircuitBreaker] Using fallback response');
+        if (personality && personality.includes('Sam')) {
+          return 'I need a moment to think about this. The conversation is getting quite deep.';
+        } else if (personality && personality.includes('Alex')) {
+          return 'Let me try a different approach to this topic.';
+        } else {
+          return 'I\'m having some technical difficulties, but I\'d love to continue our conversation.';
+        }
       }
-    }, {
-      timeout: timeout,
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    if (response.data && response.data.response) {
-      return response.data.response;
-    } else {
-      throw new Error('Invalid response format from Ollama');
-    }
+    );
+
+    return response;
   } catch (error) {
     console.error('Ollama API error:', error.message);
-    console.error('Error details:', error.response?.data || 'No response data');
+    console.error('Error details:', error.response?.data || error.stack || 'No response data');
     
-    // Mark model as unhealthy
-    modelHealth.set(model, false);
+    // Check if it's a circuit breaker error
+    if (error.message && error.message.includes('Circuit breaker')) {
+      console.log('[CircuitBreaker] Circuit is OPEN, using fallback');
+    }
     
     // Generate a natural fallback response
     if (personality && personality.includes('Sam')) {
@@ -328,7 +349,7 @@ async function getConversationMemory(conversationId, maxMessages = 50) {
   });
 }
 
-// Function to save message to both OpenMemory and database
+// Function to save message to both OpenMemory and database with recovery state saving
 async function saveToHistory(conversationId, sender, text, mediaUrl = null, mediaType = null) {
   try {
     // Store in OpenMemory for semantic search
@@ -355,6 +376,19 @@ async function saveToHistory(conversationId, sender, text, mediaUrl = null, medi
         console.error('Database save error:', err);
         reject(err);
         return;
+      }
+      
+      // Save conversation state for recovery
+      const conversation = conversations.get(conversationId);
+      if (conversation) {
+        recoveryService.saveConversationState(conversationId, {
+          modelA: conversation.modelA,
+          modelB: conversation.modelB,
+          turn: conversation.turn,
+          lastMessageId: this.lastID
+        }).catch(err => {
+          console.error('[RecoveryService] Error saving state:', err);
+        });
       }
       
       // Update conversation last activity
@@ -390,9 +424,10 @@ function createConversation(conversationId, modelA, modelB) {
   });
 }
 
-// Function to get recent messages for flow context
+// Function to get recent messages for flow context (optimized query)
 function getRecentMessages(conversationId, limit = 5) {
   return new Promise((resolve, reject) => {
+    // Optimized query using index on conversation_id and timestamp
     const query = `
       SELECT sender, message, timestamp
       FROM messages 
@@ -420,6 +455,34 @@ function getRecentMessages(conversationId, limit = 5) {
       }).reverse(); // Reverse to get chronological order
       
       resolve(messages);
+    });
+  });
+}
+
+// Optimized function to get multiple conversations at once (batch query)
+function getMultipleConversations(conversationIds) {
+  return new Promise((resolve, reject) => {
+    if (!conversationIds || conversationIds.length === 0) {
+      resolve([]);
+      return;
+    }
+    
+    // Use IN clause for batch query instead of N+1 queries
+    const placeholders = conversationIds.map(() => '?').join(',');
+    const query = `
+      SELECT id, model_a, model_b, created_at, last_activity
+      FROM conversations
+      WHERE id IN (${placeholders})
+    `;
+    
+    db.all(query, conversationIds, (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        reject(err);
+        return;
+      }
+      
+      resolve(rows);
     });
   });
 }
@@ -708,9 +771,31 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
     
   } catch (error) {
     console.error('Error in conversation loop:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Try to recover conversation automatically
+    try {
+      const recovery = await recoveryService.recoverConversation(conversationId, error.message);
+      if (recovery.success) {
+        console.log(`[RecoveryService] Successfully recovered conversation ${conversationId}`);
+        socket.emit('message', {
+          type: 'message',
+          role: 'system',
+          text: 'Conversation recovered. Continuing from last successful message...',
+          sender: 'System'
+        });
+        // Continue conversation from recovered state
+        return;
+      }
+    } catch (recoveryError) {
+      console.error('[RecoveryService] Recovery failed:', recoveryError);
+    }
+    
+    // If recovery fails, send error message
     socket.emit('message', {
       type: 'error',
-      text: 'Conversation paused due to an error. Please restart.'
+      text: 'Conversation paused due to an error. Please restart.',
+      error: error.message
     });
   }
 }
@@ -718,6 +803,11 @@ async function continueConversationLoop(socket, conversationId, modelA, modelB, 
 // Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
+  
+  // Handle connection errors
+  socket.on('error', (error) => {
+    console.error(`[WebSocket] Error for client ${socket.id}:`, error);
+  });
   
   // Send welcome message
   socket.emit('message', {
@@ -731,26 +821,35 @@ io.on('connection', (socket) => {
     const { modelA, modelB } = data;
     const conversationId = socket.id;
     
-    console.log(`Starting conversation between ${modelA} and ${modelB}`);
-    console.log('Received data:', data);
-    
-    // Store conversation info
-    conversations.set(conversationId, {
-      modelA: modelMap[modelA] || 'llama3.2',
-      modelB: modelMap[modelB] || 'llama3.2',
-      turn: 'A'
-    });
-
-    // Create conversation in database
-    await createConversation(conversationId, modelMap[modelA] || 'llama3.2', modelMap[modelB] || 'llama3.2');
-
-    // Start the conversation with personality
-    const personalityA = personalityMap[modelA] || personalityMap['gpt-4o'];
-    const personalityB = personalityMap[modelB] || personalityMap['claude-3-5-sonnet'];
-    
-    const initialPrompt = `${personalityA} You're in a cozy café having a conversation with Sam. Start by introducing yourself and asking what they'd like to talk about. Keep it warm and café-like. Keep your response short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That's fantastic" or "That's amazing". Be conversational and varied in your responses.`;
-    
     try {
+      console.log(`Starting conversation between ${modelA} and ${modelB}`);
+      console.log('Received data:', data);
+      
+      // Validate input
+      if (!modelA || !modelB) {
+        socket.emit('message', {
+          type: 'error',
+          text: 'Please select both models before starting a conversation.'
+        });
+        return;
+      }
+      
+      // Store conversation info
+      conversations.set(conversationId, {
+        modelA: modelMap[modelA] || 'llama3.2',
+        modelB: modelMap[modelB] || 'llama3.2',
+        turn: 'A'
+      });
+
+      // Create conversation in database
+      await createConversation(conversationId, modelMap[modelA] || 'llama3.2', modelMap[modelB] || 'llama3.2');
+
+      // Start the conversation with personality
+      const personalityA = personalityMap[modelA] || personalityMap['gpt-4o'];
+      const personalityB = personalityMap[modelB] || personalityMap['claude-3-5-sonnet'];
+      
+      const initialPrompt = `${personalityA} You're in a cozy café having a conversation with Sam. Start by introducing yourself and asking what they'd like to talk about. Keep it warm and café-like. Keep your response short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That's fantastic" or "That's amazing". Be conversational and varied in your responses.`;
+      
       const response = await callOllama(initialPrompt, modelMap[modelA]);
       
       // Save initial message to database
@@ -766,79 +865,128 @@ io.on('connection', (socket) => {
       // Switch to B's turn
       conversations.get(conversationId).turn = 'B';
       
-        // Let B respond with personality
-        setTimeout(async () => {
+      // Let B respond with personality
+      setTimeout(async () => {
+        try {
+          // Check if conversation still exists
+          if (!conversations.has(conversationId)) {
+            return;
+          }
+          
           const bPrompt = `${personalityB} Alex just said: "${response}". Respond naturally and continue the conversation. Keep it warm and café-like. Keep your response short and tweet-like (under 200 characters). Avoid using emojis, quotation marks around your responses, and repetitive phrases like "That's fantastic" or "That's amazing". Be conversational and varied in your responses.`;
           
           const bResponse = await callOllama(bPrompt, modelMap[modelB]);
         
-        // Save B's response to database
-        await saveToHistory(conversationId, 'Sam', bResponse);
-        
-        socket.emit('message', {
-          type: 'message',
-          role: 'bot',
-          text: bResponse,
-          sender: 'Sam'
-        });
-        
-        // Switch back to A and continue the conversation
-        if (conversations.has(conversationId)) {
-          conversations.get(conversationId).turn = 'A';
-        }
-        
-        // Continue the conversation automatically
-        setTimeout(async () => {
-          const aPrompt = `You are Alex in a cozy café conversation. Sam just said: "${bResponse}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. Keep your response short and tweet-like (under 200 characters).`;
-          
-          const aResponse = await callOllama(aPrompt, modelMap[modelA]);
-          
-          // Save A's response to database
-          await saveToHistory(conversationId, 'Alex', aResponse);
+          // Save B's response to database
+          await saveToHistory(conversationId, 'Sam', bResponse);
           
           socket.emit('message', {
             type: 'message',
             role: 'bot',
-            text: aResponse,
-            sender: 'Alex'
+            text: bResponse,
+            sender: 'Sam'
           });
           
-          // Switch back to B and continue
+          // Switch back to A and continue the conversation
           if (conversations.has(conversationId)) {
-            conversations.get(conversationId).turn = 'B';
+            conversations.get(conversationId).turn = 'A';
           }
           
-          // Continue the conversation loop
+          // Continue the conversation automatically
           setTimeout(async () => {
-            const bPrompt2 = `You are Sam in a cozy café conversation. Alex just said: "${aResponse}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. Keep your response short and tweet-like (under 200 characters).`;
-            
-            const bResponse2 = await callOllama(bPrompt2, modelMap[modelB]);
-            
-            // Save B's second response to database
-            await saveToHistory(conversationId, 'Sam', bResponse2);
-            
-            socket.emit('message', {
-              type: 'message',
-              role: 'bot',
-              text: bResponse2,
-              sender: 'Sam'
-            });
-            
-            // Switch back to A and continue the loop
-            if (conversations.has(conversationId)) {
-              conversations.get(conversationId).turn = 'A';
+            try {
+              // Check if conversation still exists
+              if (!conversations.has(conversationId)) {
+                return;
+              }
+              
+              const aPrompt = `You are Alex in a cozy café conversation. Sam just said: "${bResponse}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. Keep your response short and tweet-like (under 200 characters).`;
+              
+              const aResponse = await callOllama(aPrompt, modelMap[modelA]);
+              
+              // Save A's response to database
+              await saveToHistory(conversationId, 'Alex', aResponse);
+              
+              socket.emit('message', {
+                type: 'message',
+                role: 'bot',
+                text: aResponse,
+                sender: 'Alex'
+              });
+              
+              // Switch back to B and continue
+              if (conversations.has(conversationId)) {
+                conversations.get(conversationId).turn = 'B';
+              }
+              
+              // Continue the conversation loop
+              setTimeout(async () => {
+                try {
+                  // Check if conversation still exists
+                  if (!conversations.has(conversationId)) {
+                    return;
+                  }
+                  
+                  const bPrompt2 = `You are Sam in a cozy café conversation. Alex just said: "${aResponse}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like. Keep your response short and tweet-like (under 200 characters).`;
+                  
+                  const bResponse2 = await callOllama(bPrompt2, modelMap[modelB]);
+                  
+                  // Save B's second response to database
+                  await saveToHistory(conversationId, 'Sam', bResponse2);
+                  
+                  socket.emit('message', {
+                    type: 'message',
+                    role: 'bot',
+                    text: bResponse2,
+                    sender: 'Sam'
+                  });
+                  
+                  // Switch back to A and continue the loop
+                  if (conversations.has(conversationId)) {
+                    conversations.get(conversationId).turn = 'A';
+                  }
+                  
+                  // Continue the conversation indefinitely
+                  continueConversationLoop(socket, conversationId, modelA, modelB, aResponse, bResponse2);
+                } catch (error) {
+                  console.error('[WebSocket] Error in nested setTimeout callback:', error);
+                  socket.emit('message', {
+                    type: 'error',
+                    text: 'Error continuing conversation. Please restart.'
+                  });
+                }
+              }, 10000); // 10 second delay
+            } catch (error) {
+              console.error('[WebSocket] Error in setTimeout callback:', error);
+              socket.emit('message', {
+                type: 'error',
+                text: 'Error continuing conversation. Please restart.'
+              });
             }
-            
-            // Continue the conversation indefinitely
-            continueConversationLoop(socket, conversationId, modelA, modelB, aResponse, bResponse2);
           }, 10000); // 10 second delay
-        }, 10000); // 10 second delay
+        } catch (error) {
+          console.error('[WebSocket] Error in setTimeout callback:', error);
+          socket.emit('message', {
+            type: 'error',
+            text: 'Error continuing conversation. Please restart.'
+          });
+        }
       }, 10000); // 10 second delay
       
     } catch (error) {
+      console.error('[WebSocket] Error in start_conversation:', error);
+      console.error('[WebSocket] Error stack:', error.stack);
+      console.error('[WebSocket] Error details:', {
+        conversationId,
+        modelA,
+        modelB,
+        errorMessage: error.message
+      });
+      
       socket.emit('message', {
         type: 'error',
-        text: 'Failed to start conversation. Please try again.'
+        text: 'Failed to start conversation. Please try again.',
+        error: error.message
       });
     }
   });
@@ -847,23 +995,23 @@ io.on('connection', (socket) => {
     const conversationId = socket.id;
     const conversation = conversations.get(conversationId);
     
-    if (!conversation) {
-      socket.emit('message', {
-        type: 'error',
-        text: 'No active conversation found. Please start a new conversation.'
-      });
-      return;
-    }
-
-    const { lastMessage } = data;
-    const isATurn = conversation.turn === 'A';
-    const currentModel = isATurn ? conversation.modelA : conversation.modelB;
-    const currentName = isATurn ? 'Alex' : 'Sam';
-    const otherName = isATurn ? 'Sam' : 'Alex';
-    
-    const prompt = `You are ${currentName} in a cozy café conversation. ${otherName} just said: "${lastMessage}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like.`;
-    
     try {
+      if (!conversation) {
+        socket.emit('message', {
+          type: 'error',
+          text: 'No active conversation found. Please start a new conversation.'
+        });
+        return;
+      }
+
+      const { lastMessage } = data;
+      const isATurn = conversation.turn === 'A';
+      const currentModel = isATurn ? conversation.modelA : conversation.modelB;
+      const currentName = isATurn ? 'Alex' : 'Sam';
+      const otherName = isATurn ? 'Sam' : 'Alex';
+      
+      const prompt = `You are ${currentName} in a cozy café conversation. ${otherName} just said: "${lastMessage}". Respond naturally and continue the conversation. Keep it warm, friendly, and café-like.`;
+      
       const response = await callOllama(prompt, currentModel);
       
       socket.emit('message', {
@@ -877,9 +1025,12 @@ io.on('connection', (socket) => {
       conversation.turn = isATurn ? 'B' : 'A';
       
     } catch (error) {
+      console.error('[WebSocket] Error in continue_conversation:', error);
+      console.error('[WebSocket] Error stack:', error.stack);
       socket.emit('message', {
         type: 'error',
-        text: 'Failed to generate response. Please try again.'
+        text: 'Failed to generate response. Please try again.',
+        error: error.message
       });
     }
   });
@@ -896,10 +1047,16 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+  socket.on('disconnect', (reason) => {
+    console.log(`Client disconnected: ${socket.id}, reason: ${reason}`);
     conversations.delete(socket.id);
+    recoveryService.clearRecoveryAttempts(socket.id);
     // Note: Database conversation history is persistent, not cleared on disconnect
+  });
+  
+  // Handle reconnection attempts
+  socket.on('reconnect', (attemptNumber) => {
+    console.log(`Client reconnected: ${socket.id}, attempt: ${attemptNumber}`);
   });
 });
 
@@ -920,11 +1077,17 @@ app.get('/health', async (req, res) => {
       console.log('Ollama health check failed:', error.message);
     }
     
-    // Check model health status
-    const modelStatus = {};
-    for (const [model, isHealthy] of modelHealth.entries()) {
-      modelStatus[model] = isHealthy ? 'healthy' : 'unhealthy';
-    }
+    // Get model health from ModelHealthService
+    const modelHealthStatus = modelHealthService.getAllModelHealth();
+    
+    // Get circuit breaker status
+    const circuitBreakerStatus = circuitBreaker.getState();
+    
+    // Get cache statistics
+    const cacheStats = cacheService.getStats();
+    
+    // Get connection pool statistics
+    const poolStats = ollamaPool.getStats();
     
     res.json({ 
       status: 'OK', 
@@ -932,8 +1095,15 @@ app.get('/health', async (req, res) => {
       openmemory: openMemoryHealth ? 'connected' : 'disconnected',
       ollama: ollamaStatus,
       available_models: availableModels,
-      model_health: modelStatus,
-      fallback_config: MODEL_FALLBACKS
+      model_health: modelHealthStatus,
+      fallback_config: MODEL_FALLBACKS,
+      circuit_breaker: {
+        state: circuitBreakerStatus.state,
+        failure_count: circuitBreakerStatus.failureCount,
+        success_count: circuitBreakerStatus.successCount
+      },
+      cache: cacheStats,
+      connection_pool: poolStats
     });
   } catch (error) {
     res.status(500).json({
@@ -976,7 +1146,23 @@ app.post('/memory/search', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3003;
+// Global error handlers
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Unhandled Rejection]', reason);
+  console.error('[Promise]', promise);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[Uncaught Exception]', error);
+  console.error('[Stack]', error.stack);
+});
+
+// Handle Socket.io server errors
+io.engine.on('connection_error', (err) => {
+  console.error('[Socket.io] Connection error:', err);
+});
+
+const PORT = process.env.PORT || 3002;
 server.listen(PORT, () => {
   console.log(`🚀 Ghibli Café Backend running on port ${PORT}`);
   console.log(`☕ Ollama integration ready`);

@@ -47,7 +47,7 @@ export default function AuralynxChat() {
     if (connected || socketRef.current) return;
     
     // Backend Socket.io URL
-    const SOCKET_ENDPOINT = 'http://localhost:3003';
+    const SOCKET_ENDPOINT = 'http://localhost:3002';
     
     try {
       socketRef.current = io(SOCKET_ENDPOINT, {
